@@ -154,10 +154,16 @@ impl Inspector {
                     && !script.is_p2tr()
                     && !script.is_op_return()
                     && !script.is_multisig()
+                    && !is_p2a(script)
                 {
-                    Some(Anomaly::UnusualScript {
-                        script_type: "Non-standard".to_string(),
-                    })
+                    match script.witness_version() {
+                        None => Some(Anomaly::UnusualScript {
+                            script_type: "Non-standard".to_string(),
+                        }),
+                        Some(v) => Some(Anomaly::UnusualScript {
+                            script_type: format!("Unknown SegWit v{}", v.to_num()),
+                        }),
+                    }
                 } else {
                     None
                 }
@@ -376,5 +382,25 @@ impl Inspector {
                 anomalies
             })
             .collect()
+    }
+}
+
+fn is_p2a(script: &ScriptBuf) -> bool {
+    script.as_bytes() == [0x51, 0x02, 0x4e, 0x73]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_is_p2a() {
+        let address = bitcoin::Address::from_str("bc1pfeessrawgf")
+            .unwrap()
+            .assume_checked();
+
+        println!("{:?}", address.script_pubkey().as_bytes());
+        assert!(is_p2a(&address.script_pubkey()));
     }
 }
