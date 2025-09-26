@@ -15,7 +15,7 @@ const RPC_PASS: &str = "pass";
 #[tokio::test]
 async fn test_zmq_listener() -> Result<()> {
     // Initialize tracing subscriber that works with tokio::spawn
-    let _guard = tracing_subscriber::fmt()
+    tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(Level::DEBUG)
         .init();
@@ -121,7 +121,7 @@ pub fn generate_blocks(bitcoind: &Bitcoind, num: usize) {
     let _block_hashes = bitcoind
         .client
         .generate_to_address(num, &address)
-        .expect(&format!("failed to generate {num} blocks"));
+        .unwrap_or_else(|_| panic!("failed to generate {num} blocks"));
 }
 
 fn create_config(zmq: u16, rpc_url: String) -> mempool_radar::Config {

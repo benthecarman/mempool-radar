@@ -238,7 +238,7 @@ fn test_transaction_serialization() {
     // Test that transaction can be serialized and deserialized
     let serialized = bitcoin::consensus::encode::serialize(&tx);
     assert!(
-        serialized.len() > 0,
+        !serialized.is_empty(),
         "Serialized transaction should not be empty"
     );
 
