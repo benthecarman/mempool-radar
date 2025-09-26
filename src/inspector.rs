@@ -1,7 +1,7 @@
 use bitcoin::opcodes::{Class, ClassifyContext};
 use bitcoin::taproot::LeafVersion;
 use bitcoin::transaction::Version;
-use bitcoin::{Amount, Transaction, Txid};
+use bitcoin::{Amount, ScriptBuf, Transaction, Txid};
 use corepc_client::client_sync::v29::Client;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -251,10 +251,10 @@ impl Inspector {
                 // Get ancestors and add their sizes
                 if let Ok(ancestors) = self.rpc.get_mempool_ancestors(txid) {
                     for ancestor_txid_str in ancestors.0 {
-                        if let Ok(ancestor_txid) = ancestor_txid_str.parse() {
-                            if let Ok(ancestor_entry) = self.rpc.get_mempool_entry(ancestor_txid) {
-                                total_package_size += ancestor_entry.0.vsize;
-                            }
+                        if let Ok(ancestor_txid) = ancestor_txid_str.parse()
+                            && let Ok(ancestor_entry) = self.rpc.get_mempool_entry(ancestor_txid)
+                        {
+                            total_package_size += ancestor_entry.0.vsize;
                         }
                     }
                 }
@@ -262,12 +262,11 @@ impl Inspector {
                 // Get descendants and add their sizes
                 if let Ok(descendants) = self.rpc.get_mempool_descendants(txid) {
                     for descendant_txid_str in descendants.0 {
-                        if let Ok(descendant_txid) = descendant_txid_str.parse() {
-                            if let Ok(descendant_entry) =
+                        if let Ok(descendant_txid) = descendant_txid_str.parse()
+                            && let Ok(descendant_entry) =
                                 self.rpc.get_mempool_entry(descendant_txid)
-                            {
-                                total_package_size += descendant_entry.0.vsize;
-                            }
+                        {
+                            total_package_size += descendant_entry.0.vsize;
                         }
                     }
                 }
@@ -320,10 +319,37 @@ impl Inspector {
         tx.input
             .iter()
             .enumerate()
-            .flat_map(|(idx, input)| match input.witness.taproot_leaf_script() {
-                Some(leaf_script) => {
-                    let mut anomalies = Vec::new();
+            .flat_map(|(idx, input)| {
+                let leaf_script = input.witness.taproot_leaf_script();
+                let annex = input.witness.taproot_annex();
 
+                // Shortcircuit if neither leaf_script nor annex is present
+                if leaf_script.is_none() && annex.is_none() {
+                    return vec![];
+                }
+
+                let prevout = self.rpc.get_tx_out(
+                    input.previous_output.txid,
+                    input.previous_output.vout as u64,
+                );
+
+                if prevout.is_err() {
+                    return vec![];
+                }
+
+                let is_p2tr = {
+                    let prevout = prevout.unwrap();
+                    ScriptBuf::from_hex(&prevout.script_pubkey.hex)
+                        .is_ok_and(|script| script.is_p2tr())
+                };
+
+                // Shortcircuit if not P2TR
+                if !is_p2tr {
+                    return vec![];
+                }
+
+                let mut anomalies = Vec::new();
+                if let Some(leaf_script) = leaf_script {
                     if leaf_script.version != LeafVersion::TapScript {
                         anomalies.push(Anomaly::UnknownLeafVersion {
                             idx: idx as u32,
@@ -335,19 +361,22 @@ impl Inspector {
                         if i.is_err() {
                             break;
                         }
-                        if let Ok(bitcoin::blockdata::script::Instruction::Op(opcode)) = i {
-                            if opcode.classify(ClassifyContext::TapScript) == Class::SuccessOp {
-                                anomalies.push(Anomaly::HasOpSuccess {
-                                    idx: idx as u32,
-                                    opcode: opcode.to_u8(),
-                                });
-                            }
+                        if let Ok(bitcoin::blockdata::script::Instruction::Op(opcode)) = i
+                            && opcode.classify(ClassifyContext::TapScript) == Class::SuccessOp
+                        {
+                            anomalies.push(Anomaly::HasOpSuccess {
+                                idx: idx as u32,
+                                opcode: opcode.to_u8(),
+                            });
                         }
                     }
-
-                    anomalies
                 }
-                None => vec![],
+
+                if annex.is_some() {
+                    anomalies.push(Anomaly::HasAnnex { idx: idx as u32 });
+                }
+
+                anomalies
             })
             .collect()
     }
