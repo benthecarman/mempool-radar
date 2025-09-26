@@ -21,6 +21,7 @@ pub enum Anomaly {
     HasAnnex { idx: u32 },
     HasOpSuccess { idx: u32, opcode: u8 },
     UnknownLeafVersion { idx: u32, version: u8 },
+    UnknownInputScriptType { idx: u32, script_type: String },
 }
 
 impl Anomaly {
@@ -61,6 +62,11 @@ impl Anomaly {
             }
             Anomaly::UnknownLeafVersion { idx, version } => {
                 format!("❓ Unknown Taproot Leaf Version\nInput Index: {idx}, Version: {version}")
+            }
+            Anomaly::UnknownInputScriptType { idx, script_type } => {
+                format!(
+                    "❓ Unknown Input Script Type\nInput Index: {idx}, Script Type: {script_type}"
+                )
             }
         }
     }
@@ -114,14 +120,9 @@ impl Inspector {
             anomalies.extend(dusts);
         }
 
-        let annexes = self.check_has_annex(tx);
-        if !annexes.is_empty() {
-            anomalies.extend(annexes);
-        }
-
-        let tapscripts = self.check_tapscripts(tx);
-        if !tapscripts.is_empty() {
-            anomalies.extend(tapscripts);
+        let inputs = self.check_inputs(tx);
+        if !inputs.is_empty() {
+            anomalies.extend(inputs);
         }
 
         Ok(anomalies)
@@ -160,9 +161,7 @@ impl Inspector {
                         None => Some(Anomaly::UnusualScript {
                             script_type: "Non-standard".to_string(),
                         }),
-                        Some(v) => Some(Anomaly::UnusualScript {
-                            script_type: format!("Unknown SegWit v{}", v.to_num()),
-                        }),
+                        Some(_) => None, // unknown witness version are standard
                     }
                 } else {
                     None
@@ -282,32 +281,13 @@ impl Inspector {
         Ok(None)
     }
 
-    fn check_has_annex(&self, tx: &Transaction) -> Vec<Anomaly> {
-        tx.input
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, input)| {
-                if input.witness.taproot_annex().is_some() {
-                    info!("Transaction has annex in input index {idx}");
-                    return Some(Anomaly::HasAnnex { idx: idx as u32 });
-                }
-                None
-            })
-            .collect()
-    }
-
-    fn check_tapscripts(&self, tx: &Transaction) -> Vec<Anomaly> {
+    fn check_inputs(&self, tx: &Transaction) -> Vec<Anomaly> {
         tx.input
             .iter()
             .enumerate()
             .flat_map(|(idx, input)| {
                 let leaf_script = input.witness.taproot_leaf_script();
                 let annex = input.witness.taproot_annex();
-
-                // Shortcircuit if neither leaf_script nor annex is present
-                if leaf_script.is_none() && annex.is_none() {
-                    return vec![];
-                }
 
                 let prevout = self.rpc.get_tx_out(
                     input.previous_output.txid,
@@ -318,11 +298,30 @@ impl Inspector {
                     return vec![];
                 }
 
-                let is_p2tr = {
+                let prevout_script = {
                     let prevout = prevout.unwrap();
                     ScriptBuf::from_hex(&prevout.script_pubkey.hex)
-                        .is_ok_and(|script| script.is_p2tr())
                 };
+                if prevout_script.is_err() {
+                    return vec![Anomaly::UnknownInputScriptType {
+                        idx: idx as u32,
+                        script_type: "Unable to parse previous output script".to_string(),
+                    }];
+                }
+                let prevout_script = prevout_script.unwrap();
+
+                let is_p2tr = prevout_script.is_p2tr();
+
+                let witness_version = prevout_script.witness_version();
+                if witness_version.is_some_and(|v| v.to_num() > 1) {
+                    return vec![Anomaly::UnknownInputScriptType {
+                        idx: idx as u32,
+                        script_type: format!(
+                            "Spent Unknown SegWit v{}",
+                            witness_version.unwrap().to_num()
+                        ),
+                    }];
+                }
 
                 // Shortcircuit if not P2TR
                 if !is_p2tr {
