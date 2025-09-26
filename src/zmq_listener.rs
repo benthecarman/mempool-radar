@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
-use bitcoin::hex::FromHex;
+use bitcoin::hex::{DisplayHex, FromHex};
 use bitcoin::{Transaction, Txid, consensus::encode::deserialize};
 use corepc_client::client_sync::v29::Client;
+use std::str::FromStr;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use zeromq::{Socket, SocketRecv};
@@ -16,6 +17,7 @@ impl ZmqListener {
         Self { endpoint, rpc }
     }
 
+    #[tracing::instrument(skip(self, tx_sender))]
     pub async fn start(self, tx_sender: mpsc::Sender<Transaction>) -> Result<()> {
         let mut socket = zeromq::SubSocket::new();
 
@@ -42,10 +44,12 @@ impl ZmqListener {
                         .and_then(|frame| std::str::from_utf8(frame).ok())
                         .unwrap_or("unknown");
 
-                    if topic == "sequence"
-                        && let Err(e) = self.process_sequence_message(&msg, &tx_sender).await
-                    {
-                        error!("Failed to process sequence message: {e}");
+                    if topic == "sequence" {
+                        if let Err(e) = self.process_sequence_message(&msg, &tx_sender).await {
+                            error!("Failed to process sequence message: {e}");
+                        }
+                    } else {
+                        warn!("Received message with unknown topic: {topic}");
                     }
                 }
                 Err(e) => {
@@ -56,25 +60,34 @@ impl ZmqListener {
         }
     }
 
+    #[tracing::instrument(skip(self, msg, tx_sender))]
     async fn process_sequence_message(
         &self,
         msg: &zeromq::ZmqMessage,
         tx_sender: &mpsc::Sender<Transaction>,
     ) -> Result<()> {
-        if msg.len() < 4 {
+        if msg.len() < 3 {
+            warn!("Invalid sequence message length {}", msg.len());
             return Ok(());
         }
 
-        let hash_bytes = msg.get(1).context("Missing hash in sequence message")?;
-        let event_type_byte = msg
-            .get(2)
-            .context("Missing event type in sequence message")?;
-        let sequence_bytes = msg.get(3).context("Missing sequence number")?;
-
-        if hash_bytes.len() != 32 || event_type_byte.len() != 1 || sequence_bytes.len() != 4 {
-            warn!("Invalid sequence message format");
+        let topic = msg.get(0).context("Missing topic in sequence message")?;
+        if topic.to_vec() != b"sequence" {
+            warn!("Invalid topic in sequence message: {topic:?}");
             return Ok(());
         }
+
+        let body = &msg.get(1).context("Missing body in sequence message")?;
+
+        // mempool sequence message format:
+        // [32 bytes tx/block hash][1 byte event type][4 bytes sequence number]
+        if body.len() != 41 {
+            return Ok(());
+        }
+
+        let hash_bytes = &body[0..32];
+        let event_type_byte = &body[32..33];
+        let sequence_bytes = &body[33..37];
 
         let event_type = event_type_byte[0] as char;
         let sequence_num = u32::from_le_bytes([
@@ -84,20 +97,13 @@ impl ZmqListener {
             sequence_bytes[3],
         ]);
 
-        let reversed_hash: Vec<u8> = hash_bytes.iter().rev().cloned().collect();
-        let hash_hex = reversed_hash
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>();
+        let hash_hex = hash_bytes.to_lower_hex_string();
 
         match event_type {
             'A' => {
-                debug!(
-                    "Transaction added to mempool: {} (seq: {})",
-                    hash_hex, sequence_num
-                );
+                debug!("Transaction added to mempool: {hash_hex} (seq: {sequence_num})");
 
-                if let Ok(txid) = hash_hex.parse::<Txid>() {
+                if let Ok(txid) = Txid::from_str(hash_hex.as_str()) {
                     match self.rpc.get_raw_transaction(txid) {
                         Ok(raw_tx_response) => match <Vec<u8>>::from_hex(&raw_tx_response.0) {
                             Ok(raw_tx_bytes) => match deserialize::<Transaction>(&raw_tx_bytes) {

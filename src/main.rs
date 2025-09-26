@@ -1,7 +1,7 @@
-mod config;
-mod inspector;
-mod notifier;
-mod zmq_listener;
+pub mod config;
+pub mod inspector;
+pub mod notifier;
+pub mod zmq_listener;
 
 use anyhow::{Context, Result};
 use clap::Parser;
