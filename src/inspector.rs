@@ -244,35 +244,13 @@ impl Inspector {
     }
 
     fn check_package_violations(&self, txid: Txid) -> anyhow::Result<Option<Anomaly>> {
-        let mut total_package_size = 0i64;
-
         // Get the entry for this transaction to get its size
         match self.rpc.get_mempool_entry(txid) {
             Ok(entry) => {
-                total_package_size += entry.0.vsize;
-
-                // Get ancestors and add their sizes
-                if let Ok(ancestors) = self.rpc.get_mempool_ancestors(txid) {
-                    for ancestor_txid_str in ancestors.0 {
-                        if let Ok(ancestor_txid) = ancestor_txid_str.parse()
-                            && let Ok(ancestor_entry) = self.rpc.get_mempool_entry(ancestor_txid)
-                        {
-                            total_package_size += ancestor_entry.0.vsize;
-                        }
-                    }
-                }
-
-                // Get descendants and add their sizes
-                if let Ok(descendants) = self.rpc.get_mempool_descendants(txid) {
-                    for descendant_txid_str in descendants.0 {
-                        if let Ok(descendant_txid) = descendant_txid_str.parse()
-                            && let Ok(descendant_entry) =
-                                self.rpc.get_mempool_entry(descendant_txid)
-                        {
-                            total_package_size += descendant_entry.0.vsize;
-                        }
-                    }
-                }
+                // Calculate total package size: ancestor_size + descendant_size
+                // minus the size of the transaction itself (vsize) because it's counted in both
+                let total_package_size =
+                    entry.0.ancestor_size + entry.0.descendant_size - entry.0.vsize;
 
                 if total_package_size > self.config.max_package_size as i64 {
                     info!(
