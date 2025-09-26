@@ -103,16 +103,16 @@ impl Notifier {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            error!("Telegram API error: {} - {}", status, text);
-            anyhow::bail!("Telegram API error: {}", status);
+            error!("Telegram API error: {status} - {text}");
+            anyhow::bail!("Telegram API error: {status}");
         }
 
-        info!("Sent Telegram notification for anomaly");
+        info!("Sent Telegram notification for anomaly {txid}");
         Ok(())
     }
 
     fn log_anomalies(&self, txid: Txid, anomalies: &[Anomaly]) {
-        info!("Anomalies detected for transaction {}:", txid);
+        info!("Anomalies detected for transaction {txid}:");
         for anomaly in anomalies {
             info!(" - {}", anomaly.to_message());
         }
