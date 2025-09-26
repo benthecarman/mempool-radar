@@ -27,7 +27,7 @@ impl Anomaly {
     pub fn to_message(&self) -> String {
         match self {
             Anomaly::LargeTransaction { size_bytes } => {
-                format!("🐋 Large Transaction\nSize: {} KB", size_bytes / 1000,)
+                format!("🐋 Large Transaction\nSize: {} vKB", size_bytes / 1000,)
             }
             Anomaly::UnusualScript { script_type } => {
                 format!("🔍 Unusual Script\nType: {script_type}",)
@@ -128,7 +128,7 @@ impl Inspector {
     }
 
     fn check_large_transaction(&self, txid: Txid, tx: &Transaction) -> Option<Anomaly> {
-        let size = tx.total_size();
+        let size = tx.vsize();
 
         if size > self.config.large_tx_size {
             info!("Large transaction detected: {txid} (size: {size} bytes)",);
