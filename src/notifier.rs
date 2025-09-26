@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use bitcoin::Txid;
 use reqwest::Client;
 use serde_json::json;
 use std::collections::HashMap;
@@ -16,7 +17,7 @@ pub struct Notifier {
 }
 
 struct RateLimiter {
-    sent_messages: HashMap<String, Instant>,
+    sent_messages: HashMap<Txid, Instant>,
     cooldown: Duration,
 }
 
@@ -28,16 +29,16 @@ impl RateLimiter {
         }
     }
 
-    fn should_send(&mut self, key: &str) -> bool {
+    fn should_send(&mut self, txid: Txid) -> bool {
         let now = Instant::now();
 
-        if let Some(last_sent) = self.sent_messages.get(key)
+        if let Some(last_sent) = self.sent_messages.get(&txid)
             && now.duration_since(*last_sent) < self.cooldown
         {
             return false;
         }
 
-        self.sent_messages.insert(key.to_string(), now);
+        self.sent_messages.insert(txid, now);
 
         self.sent_messages
             .retain(|_, v| now.duration_since(*v) < Duration::from_secs(3600));
@@ -55,30 +56,28 @@ impl Notifier {
         }
     }
 
-    pub async fn notify(&self, anomaly: &Anomaly) -> Result<()> {
-        let key = format!("{:?}", anomaly);
-
+    pub async fn notify(&self, txid: Txid, anomalies: Vec<Anomaly>) -> Result<()> {
         let mut rate_limiter = self.rate_limiter.lock().await;
-        if !rate_limiter.should_send(&key) {
-            warn!("Rate limited notification for: {}", key);
+        if !rate_limiter.should_send(txid) {
+            warn!("Rate limited notification for: {txid}");
             return Ok(());
         }
         drop(rate_limiter);
 
         if self.config.telegram_token.is_some() && self.config.telegram_chat_id.is_some() {
-            self.send_telegram(anomaly).await?;
+            self.send_telegram(txid, anomalies).await?;
         } else {
-            self.log_anomaly(anomaly);
+            self.log_anomalies(txid, &anomalies);
         }
 
         Ok(())
     }
 
-    async fn send_telegram(&self, anomaly: &Anomaly) -> Result<()> {
+    async fn send_telegram(&self, txid: Txid, anomalies: Vec<Anomaly>) -> Result<()> {
         let token = self.config.telegram_token.as_ref().unwrap();
         let chat_id = self.config.telegram_chat_id.as_ref().unwrap();
 
-        let message = anomaly.to_message();
+        let message = create_telegram_message(txid, &anomalies);
 
         let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
 
@@ -112,8 +111,11 @@ impl Notifier {
         Ok(())
     }
 
-    fn log_anomaly(&self, anomaly: &Anomaly) {
-        info!("ANOMALY DETECTED:\n{}", anomaly.to_message());
+    fn log_anomalies(&self, txid: Txid, anomalies: &[Anomaly]) {
+        info!("Anomalies detected for transaction {}:", txid);
+        for anomaly in anomalies {
+            info!(" - {}", anomaly.to_message());
+        }
     }
 
     pub async fn send_startup_message(&self) {
@@ -148,4 +150,20 @@ impl Notifier {
 
         info!("{}", message);
     }
+}
+
+fn create_telegram_message(txid: Txid, anomalies: &[Anomaly]) -> String {
+    let mut message = format!(
+        "🚨 <b>Anomalies detected in transaction {}</b> 🚨\n\n",
+        txid
+    );
+
+    for anomaly in anomalies {
+        message.push_str(&format!("• {}\n", anomaly.to_message()));
+    }
+
+    message.push_str("\nhttps://mempool.space/tx/");
+    message.push_str(&txid.to_string());
+
+    message
 }

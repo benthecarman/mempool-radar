@@ -75,8 +75,9 @@ async fn main() -> Result<()> {
             let mut inspector = inspector.lock().await;
             match inspector.analyze_transaction(&tx) {
                 Ok(anomalies) => {
-                    for anomaly in anomalies {
-                        if let Err(e) = notifier.notify(&anomaly).await {
+                    if !anomalies.is_empty() {
+                        let txid = tx.compute_txid();
+                        if let Err(e) = notifier.notify(txid, anomalies).await {
                             error!("Failed to send notification: {e}");
                         }
                     }
