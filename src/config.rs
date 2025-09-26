@@ -6,14 +6,6 @@ use std::path::PathBuf;
 #[command(version, author, about)]
 /// Mempool Radar
 pub struct Config {
-    /// Bind address for the webserver
-    #[clap(default_value_t = String::from("0.0.0.0"), long, env = "MEMPOOL_RADAR_BIND")]
-    pub bind: String,
-
-    /// Port for the webserver
-    #[clap(default_value_t = 3000, long, env = "MEMPOOL_RADAR_PORT")]
-    pub port: u16,
-
     /// Network bitcoind is running on ["bitcoin", "testnet", "signet, "regtest"]
     #[clap(default_value_t = Network::Bitcoin, short, long, env = "MEMPOOL_RADAR_NETWORK")]
     pub network: Network,
@@ -45,10 +37,6 @@ pub struct Config {
     /// ZMQ endpoint for raw transactions
     #[clap(default_value_t = String::from("tcp://127.0.0.1:28332"), long, env = "MEMPOOL_RADAR_ZMQ_ENDPOINT")]
     pub zmq_endpoint: String,
-
-    /// High fee threshold in sat/vB (transactions above this are considered high fee)
-    #[clap(default_value_t = 100, long, env = "MEMPOOL_RADAR_HIGH_FEE_THRESHOLD")]
-    pub high_fee_threshold: u64,
 
     /// Large transaction size threshold in bytes
     #[clap(default_value_t = 100_000, long, env = "MEMPOOL_RADAR_LARGE_TX_SIZE")]
