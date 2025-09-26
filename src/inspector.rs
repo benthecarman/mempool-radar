@@ -400,7 +400,6 @@ mod tests {
             .unwrap()
             .assume_checked();
 
-        println!("{:?}", address.script_pubkey().as_bytes());
         assert!(is_p2a(&address.script_pubkey()));
     }
 }

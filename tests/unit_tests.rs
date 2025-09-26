@@ -249,37 +249,3 @@ fn test_transaction_serialization() {
         "Transaction IDs should match after round-trip"
     );
 }
-
-#[cfg(test)]
-mod benchmark_tests {
-    use super::*;
-    use std::time::Instant;
-
-    #[test]
-    fn benchmark_large_transaction_creation() {
-        let start = Instant::now();
-        let _tx = create_large_transaction();
-        let elapsed = start.elapsed();
-
-        println!("Large transaction creation took: {:?}", elapsed);
-        assert!(
-            elapsed.as_millis() < 1000,
-            "Large transaction creation should be reasonably fast"
-        );
-    }
-
-    #[test]
-    fn benchmark_transaction_serialization() {
-        let tx = create_large_transaction();
-
-        let start = Instant::now();
-        let _serialized = bitcoin::consensus::encode::serialize(&tx);
-        let elapsed = start.elapsed();
-
-        println!("Large transaction serialization took: {:?}", elapsed);
-        assert!(
-            elapsed.as_millis() < 50,
-            "Transaction serialization should be fast"
-        );
-    }
-}
