@@ -143,11 +143,7 @@ impl Inspector {
             .filter_map(|output| {
                 let script = &output.script_pubkey;
 
-                if script.is_multisig() {
-                    Some(Anomaly::UnusualScript {
-                        script_type: "Bare multisig".to_string(),
-                    })
-                } else if script.is_op_return() && script.len() > 83 {
+                if script.is_op_return() && script.len() > 83 {
                     Some(Anomaly::UnusualScript {
                         script_type: format!("OP_RETURN ({} bytes)", script.len()),
                     })
@@ -157,6 +153,7 @@ impl Inspector {
                     && !script.is_p2wsh()
                     && !script.is_p2tr()
                     && !script.is_op_return()
+                    && !script.is_multisig()
                 {
                     Some(Anomaly::UnusualScript {
                         script_type: "Non-standard".to_string(),
