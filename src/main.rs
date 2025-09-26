@@ -53,17 +53,19 @@ async fn main() -> Result<()> {
         }
     };
 
-    let rpc = Client::new_with_auth(&config.rpc_url, auth)
+    let rpc = Client::new_with_auth(&config.rpc_url, auth.clone())
         .context("Failed to create Bitcoin Core RPC client")?;
 
     let notifier = Arc::new(Notifier::new(config.clone()));
     notifier.send_startup_message().await;
 
+    let rpc_clone = Client::new_with_auth(&config.rpc_url, auth)
+        .context("Failed to create second Bitcoin Core RPC client")?;
     let inspector = Arc::new(Mutex::new(Inspector::new(config.clone(), rpc)));
 
     let (tx_sender, mut tx_receiver) = mpsc::channel(1000);
 
-    let zmq_listener = ZmqListener::new(config.zmq_endpoint.clone());
+    let zmq_listener = ZmqListener::new(config.zmq_endpoint.clone(), rpc_clone);
     let zmq_handle = tokio::spawn(async move {
         if let Err(e) = zmq_listener.start(tx_sender).await {
             error!("ZMQ listener error: {}", e);

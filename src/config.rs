@@ -34,7 +34,7 @@ pub struct Config {
     #[clap(long, env = "MEMPOOL_RADAR_COOKIE_FILE")]
     pub cookie_file: Option<PathBuf>,
 
-    /// ZMQ endpoint for raw transactions
+    /// ZMQ endpoint for sequence notifications
     #[clap(default_value_t = String::from("tcp://127.0.0.1:28332"), long, env = "MEMPOOL_RADAR_ZMQ_ENDPOINT")]
     pub zmq_endpoint: String,
 
