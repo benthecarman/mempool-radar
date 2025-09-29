@@ -171,7 +171,7 @@ impl Inspector {
     }
 
     fn check_unusual_version(&self, tx: &Transaction) -> Option<Anomaly> {
-        if !tx.version.is_standard() {
+        if !tx.version.is_standard() && tx.version != Version::non_standard(3) {
             Some(Anomaly::UnusualVersion {
                 version: tx.version,
             })
