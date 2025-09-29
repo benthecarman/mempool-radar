@@ -151,6 +151,7 @@ impl Inspector {
                 } else if !script.is_p2pkh()
                     && !script.is_p2sh()
                     && !script.is_p2wpkh()
+                    && !script.is_p2pk()
                     && !script.is_p2wsh()
                     && !script.is_p2tr()
                     && !script.is_op_return()
