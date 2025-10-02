@@ -79,7 +79,7 @@ impl Notifier {
 
         let message = create_telegram_message(txid, &anomalies);
 
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
+        let url = format!("https://api.telegram.org/bot{token}/sendMessage");
 
         let payload = json!({
             "chat_id": chat_id,
@@ -114,7 +114,7 @@ impl Notifier {
     fn log_anomalies(&self, txid: Txid, anomalies: &[Anomaly]) {
         info!("Anomalies detected for transaction {txid}:");
         for anomaly in anomalies {
-            info!(" - {}", anomaly.to_message());
+            info!(" - {anomaly}");
         }
     }
 
@@ -128,7 +128,7 @@ impl Notifier {
             let token = self.config.telegram_token.as_ref().unwrap();
             let chat_id = self.config.telegram_chat_id.as_ref().unwrap();
 
-            let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
+            let url = format!("https://api.telegram.org/bot{token}/sendMessage");
 
             let payload = json!({
                 "chat_id": chat_id,
@@ -153,13 +153,11 @@ impl Notifier {
 }
 
 fn create_telegram_message(txid: Txid, anomalies: &[Anomaly]) -> String {
-    let mut message = format!(
-        "🚨 <b>Anomalies detected in transaction {}</b> 🚨\n\n",
-        txid
-    );
+    let mut message = format!("🚨 <b>Anomalies detected in transaction {txid}</b> 🚨\n\n");
 
     for anomaly in anomalies {
-        message.push_str(&format!("• {}\n", anomaly.to_message()));
+        message.push_str(anomaly.to_message().as_str());
+        message.push_str("\n");
     }
 
     message.push_str("\nhttps://mempool.space/tx/");

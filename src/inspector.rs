@@ -23,6 +23,12 @@ pub enum Anomaly {
     UnknownInputScriptType { idx: u32, script_type: String },
 }
 
+impl std::fmt::Display for Anomaly {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_message())
+    }
+}
+
 impl Anomaly {
     pub fn to_message(&self) -> String {
         match self {
