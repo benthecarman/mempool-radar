@@ -103,7 +103,7 @@ impl ZmqListener {
         // [32 bytes tx hash][1 byte event type][4 bytes sequence number]
         // block sequence message format:
         // [32 bytes block hash][1 byte event type]
-        if body.len() != 41 && body.len() != 37 {
+        if body.len() != 41 && body.len() != 33 {
             warn!("Invalid sequence message body length {}", body.len());
             return Ok(());
         }
