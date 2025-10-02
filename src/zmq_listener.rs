@@ -5,7 +5,7 @@ use corepc_client::client_sync::v29::Client;
 use std::collections::HashSet;
 use std::str::FromStr;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use zeromq::{Socket, SocketRecv};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -127,7 +127,7 @@ impl ZmqListener {
                     sequence_bytes[2],
                     sequence_bytes[3],
                 ]);
-                debug!("Transaction added to mempool: {hash_hex} (seq: {sequence_num})");
+                trace!("Transaction added to mempool: {hash_hex} (seq: {sequence_num})");
 
                 if let Ok(txid) = Txid::from_str(hash_hex.as_str()) {
                     if self.processed_txs.contains(&txid) {
@@ -185,7 +185,7 @@ impl ZmqListener {
                     sequence_bytes[2],
                     sequence_bytes[3],
                 ]);
-                debug!("Transaction removed from mempool: {hash_hex} (seq: {sequence_num})");
+                trace!("Transaction removed from mempool: {hash_hex} (seq: {sequence_num})");
             }
             'C' => {
                 debug!("Block connected: {hash_hex}");
