@@ -232,8 +232,10 @@ impl ZmqListener {
         let mut skipped_txs = 0;
 
         // Process each transaction in the block
+        let mut found_coinbase = false;
         for tx in block.txdata {
-            if tx.is_coinbase() {
+            if !found_coinbase && tx.is_coinbase() {
+                found_coinbase = true;
                 continue; // Skip coinbase
             }
 
