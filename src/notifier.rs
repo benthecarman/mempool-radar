@@ -18,55 +18,92 @@ pub struct Notifier {
 
 struct RateLimiter {
     sent_messages: HashMap<Txid, Instant>,
-    cooldown: Duration,
+    telegram: bool,
+    last_send: Option<Instant>,
 }
 
 impl RateLimiter {
-    fn new(cooldown_seconds: u64) -> Self {
+    fn new(telegram: bool) -> Self {
         Self {
             sent_messages: HashMap::new(),
-            cooldown: Duration::from_secs(cooldown_seconds),
+            telegram,
+            last_send: None,
         }
     }
 
     fn should_send(&mut self, txid: Txid) -> bool {
-        let now = Instant::now();
-
-        if let Some(last_sent) = self.sent_messages.get(&txid)
-            && now.duration_since(*last_sent) < self.cooldown
-        {
+        if self.sent_messages.contains_key(&txid) {
             return false;
         }
 
-        self.sent_messages.insert(txid, now);
+        self.sent_messages.insert(txid, Instant::now());
+        true
+    }
 
+    fn cleanup_old_entries(&mut self) {
+        let now = Instant::now();
         self.sent_messages
             .retain(|_, v| now.duration_since(*v) < Duration::from_secs(3600));
+    }
 
-        true
+    fn time_until_next_send(&self) -> Option<Duration> {
+        if !self.telegram {
+            return None;
+        }
+
+        if let Some(last) = self.last_send {
+            let elapsed = Instant::now().duration_since(last);
+            let rate_limit = Duration::from_secs(1);
+
+            if elapsed < rate_limit {
+                return Some(rate_limit - elapsed);
+            }
+        }
+
+        None
+    }
+
+    fn mark_sent(&mut self) {
+        self.last_send = Some(Instant::now());
     }
 }
 
 impl Notifier {
     pub fn new(config: Config) -> Self {
+        let telegram = config.telegram_token.is_some() && config.telegram_chat_id.is_some();
+
         Self {
             config,
             client: Client::new(),
-            rate_limiter: Mutex::new(RateLimiter::new(60)),
+            rate_limiter: Mutex::new(RateLimiter::new(telegram)),
         }
     }
 
     pub async fn notify(&self, txid: Txid, anomalies: Vec<Anomaly>) -> Result<()> {
         let mut rate_limiter = self.rate_limiter.lock().await;
         if !rate_limiter.should_send(txid) {
-            warn!("Rate limited notification for: {txid}");
+            warn!("Skipping duplicate notification for: {txid}");
             return Ok(());
         }
-        drop(rate_limiter);
+
+        // Periodically cleanup old entries
+        if rate_limiter.sent_messages.len() % 100 == 0 {
+            rate_limiter.cleanup_old_entries();
+        }
+
+        // Check if we need to wait for rate limiting
+        if let Some(wait_time) = rate_limiter.time_until_next_send() {
+            drop(rate_limiter);
+            tokio::time::sleep(wait_time).await;
+            rate_limiter = self.rate_limiter.lock().await;
+        }
 
         if self.config.telegram_token.is_some() && self.config.telegram_chat_id.is_some() {
+            rate_limiter.mark_sent();
+            drop(rate_limiter);
             self.send_telegram(txid, anomalies).await?;
         } else {
+            drop(rate_limiter);
             self.log_anomalies(txid, &anomalies);
         }
 
@@ -157,7 +194,7 @@ fn create_telegram_message(txid: Txid, anomalies: &[Anomaly]) -> String {
 
     for anomaly in anomalies {
         message.push_str(anomaly.to_message().as_str());
-        message.push_str("\n");
+        message.push('\n');
     }
 
     message.push_str("\nhttps://mempool.space/tx/");
