@@ -11,6 +11,7 @@ use crate::config::Config;
 #[derive(Debug, Clone)]
 pub enum Anomaly {
     LargeTransaction { size_bytes: usize },
+    MultipleOpReturns { count: usize },
     UnusualScript { script_type: String },
     UnusualVersion { version: Version },
     ExcessiveAncestors { ancestor_count: usize },
@@ -73,6 +74,9 @@ impl Anomaly {
                 format!(
                     "❓ Unknown Input Script Type\nInput Index: {idx}, Script Type: {script_type}"
                 )
+            }
+            Anomaly::MultipleOpReturns { count } => {
+                format!("📦 Multiple OP_RETURN Outputs\nCount: {count}")
             }
         }
     }
@@ -163,7 +167,8 @@ impl Inspector {
     }
 
     fn check_unusual_output_scripts(&self, tx: &Transaction) -> Vec<Anomaly> {
-        tx.output
+        let mut res: Vec<Anomaly> = tx
+            .output
             .iter()
             .filter_map(|output| {
                 let script = &output.script_pubkey;
@@ -192,7 +197,19 @@ impl Inspector {
                     None
                 }
             })
-            .collect()
+            .collect();
+
+        let op_return_count = tx
+            .output
+            .iter()
+            .filter(|output| output.script_pubkey.is_op_return())
+            .count();
+        if op_return_count > 1 {
+            res.push(Anomaly::MultipleOpReturns {
+                count: op_return_count,
+            });
+        }
+        res
     }
 
     fn check_unusual_version(&self, tx: &Transaction) -> Option<Anomaly> {
