@@ -8,6 +8,18 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use zeromq::{Socket, SocketRecv};
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TransactionSource {
+    Mempool,
+    Block,
+}
+
+#[derive(Debug, Clone)]
+pub struct TransactionWithSource {
+    pub transaction: Transaction,
+    pub source: TransactionSource,
+}
+
 pub struct ZmqListener {
     endpoint: String,
     rpc: Client,
@@ -26,7 +38,7 @@ impl ZmqListener {
     }
 
     #[tracing::instrument(skip(self, tx_sender))]
-    pub async fn start(mut self, tx_sender: mpsc::Sender<Transaction>) -> Result<()> {
+    pub async fn start(mut self, tx_sender: mpsc::Sender<TransactionWithSource>) -> Result<()> {
         let mut socket = zeromq::SubSocket::new();
 
         socket
@@ -72,7 +84,7 @@ impl ZmqListener {
     async fn process_sequence_message(
         &mut self,
         msg: &zeromq::ZmqMessage,
-        tx_sender: &mpsc::Sender<Transaction>,
+        tx_sender: &mpsc::Sender<TransactionWithSource>,
     ) -> Result<()> {
         if msg.len() < 3 {
             warn!("Invalid sequence message length {}", msg.len());
@@ -128,7 +140,13 @@ impl ZmqListener {
                             Ok(raw_tx_bytes) => match deserialize::<Transaction>(&raw_tx_bytes) {
                                 Ok(tx) => {
                                     self.processed_txs.insert(txid);
-                                    if let Err(e) = tx_sender.send(tx).await {
+                                    if let Err(e) = tx_sender
+                                        .send(TransactionWithSource {
+                                            transaction: tx,
+                                            source: TransactionSource::Mempool,
+                                        })
+                                        .await
+                                    {
                                         error!("Failed to send transaction to processor: {e}");
                                     }
 
@@ -202,7 +220,7 @@ impl ZmqListener {
     async fn process_block(
         &mut self,
         block_hash: BlockHash,
-        tx_sender: &mpsc::Sender<Transaction>,
+        tx_sender: &mpsc::Sender<TransactionWithSource>,
     ) -> Result<()> {
         info!("Processing block: {block_hash}");
 
@@ -229,7 +247,13 @@ impl ZmqListener {
 
             self.processed_txs.insert(txid);
             new_txs += 1;
-            if let Err(e) = tx_sender.send(tx).await {
+            if let Err(e) = tx_sender
+                .send(TransactionWithSource {
+                    transaction: tx,
+                    source: TransactionSource::Block,
+                })
+                .await
+            {
                 error!("Failed to send transaction to processor: {e}");
             }
         }

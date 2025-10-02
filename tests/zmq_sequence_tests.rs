@@ -4,7 +4,7 @@ use corepc_client::client_sync::Auth;
 use corepc_client::client_sync::v17::{Input, Output};
 use corepc_client::client_sync::v29::Client;
 use corepc_node::{Conf, Node as Bitcoind, get_available_port};
-use mempool_radar::ZmqListener;
+use mempool_radar::zmq_listener::{TransactionWithSource, ZmqListener};
 use std::str::FromStr;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
@@ -13,7 +13,7 @@ use tracing::{Instrument, Level, debug};
 const RPC_USER: &str = "user";
 const RPC_PASS: &str = "pass";
 
-async fn setup_test() -> Result<(Bitcoind, mpsc::Receiver<bitcoin::Transaction>)> {
+async fn setup_test() -> Result<(Bitcoind, mpsc::Receiver<TransactionWithSource>)> {
     tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(Level::DEBUG)
@@ -59,10 +59,11 @@ async fn test_zmq_listener() -> Result<()> {
     );
 
     // Wait for the transaction to be received via ZMQ
-    let received_tx = tokio::time::timeout(Duration::from_secs(10), tx_receiver.recv()).await?;
+    let received_tx_with_source =
+        tokio::time::timeout(Duration::from_secs(10), tx_receiver.recv()).await?;
 
     assert!(!tx_receiver.is_closed());
-    assert_eq!(received_tx.unwrap().output.len(), 2);
+    assert_eq!(received_tx_with_source.unwrap().transaction.output.len(), 2);
 
     // Generate a block to confirm the transaction and trigger another sequence message
     generate_blocks(&bitcoind, 1);
@@ -129,9 +130,13 @@ async fn test_block_processing() -> Result<()> {
 
     // We should receive 1 transaction from the block (not from mempool)
     let mut block_tx_count = 0;
-    while let Ok(Some(tx)) = tokio::time::timeout(Duration::from_secs(1), tx_receiver.recv()).await
+    while let Ok(Some(tx_with_source)) =
+        tokio::time::timeout(Duration::from_secs(1), tx_receiver.recv()).await
     {
-        debug!("Received transaction: {}", tx.compute_txid());
+        debug!(
+            "Received transaction: {}",
+            tx_with_source.transaction.compute_txid()
+        );
         block_tx_count += 1;
     }
 

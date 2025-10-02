@@ -13,7 +13,7 @@ use notifier::Notifier;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use tracing::{error, info};
-use zmq_listener::ZmqListener;
+use zmq_listener::{TransactionSource, ZmqListener};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -72,9 +72,12 @@ async fn main() -> Result<()> {
     });
 
     let processor_handle = tokio::spawn(async move {
-        while let Some(tx) = tx_receiver.recv().await {
+        while let Some(tx_with_source) = tx_receiver.recv().await {
+            let tx = &tx_with_source.transaction;
+            let from_block = tx_with_source.source == TransactionSource::Block;
+
             let mut inspector = inspector.lock().await;
-            match inspector.analyze_transaction(&tx) {
+            match inspector.analyze_transaction(tx, from_block) {
                 Ok(anomalies) => {
                     if !anomalies.is_empty() {
                         let txid = tx.compute_txid();

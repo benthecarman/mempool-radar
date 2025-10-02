@@ -87,7 +87,11 @@ impl Inspector {
         Self { config, rpc }
     }
 
-    pub fn analyze_transaction(&mut self, tx: &Transaction) -> anyhow::Result<Vec<Anomaly>> {
+    pub fn analyze_transaction(
+        &mut self,
+        tx: &Transaction,
+        from_block: bool,
+    ) -> anyhow::Result<Vec<Anomaly>> {
         let mut anomalies = Vec::new();
         let txid = tx.compute_txid();
 
@@ -99,20 +103,23 @@ impl Inspector {
             anomalies.push(anomaly);
         }
 
-        if let Some(anomaly) = self.check_ancestor_chains(txid)? {
-            anomalies.push(anomaly);
-        }
+        // Skip mempool-specific checks for transactions from blocks
+        if !from_block {
+            if let Some(anomaly) = self.check_ancestor_chains(txid)? {
+                anomalies.push(anomaly);
+            }
 
-        if let Some(anomaly) = self.check_descendant_chains(txid)? {
-            anomalies.push(anomaly);
-        }
+            if let Some(anomaly) = self.check_descendant_chains(txid)? {
+                anomalies.push(anomaly);
+            }
 
-        if let Some(anomaly) = self.check_package_violations(txid)? {
-            anomalies.push(anomaly);
-        }
+            if let Some(anomaly) = self.check_package_violations(txid)? {
+                anomalies.push(anomaly);
+            }
 
-        if let Some(anomaly) = self.check_chain_depth(txid)? {
-            anomalies.push(anomaly);
+            if let Some(anomaly) = self.check_chain_depth(txid)? {
+                anomalies.push(anomaly);
+            }
         }
 
         let scripts = self.check_unusual_output_scripts(tx);
