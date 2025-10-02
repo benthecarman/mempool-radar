@@ -3,6 +3,7 @@ use bitcoin::taproot::LeafVersion;
 use bitcoin::transaction::Version;
 use bitcoin::{Amount, Opcode, ScriptBuf, Transaction, Txid};
 use corepc_client::client_sync::v29::Client;
+use corepc_client::types::v17::GetTxOut;
 use tracing::info;
 
 use crate::config::Config;
@@ -95,6 +96,17 @@ impl Inspector {
         let mut anomalies = Vec::new();
         let txid = tx.compute_txid();
 
+        let prevouts = tx
+            .input
+            .iter()
+            .map(|input| {
+                self.rpc.get_tx_out(
+                    input.previous_output.txid,
+                    input.previous_output.vout as u64,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         if let Some(anomaly) = self.check_large_transaction(txid, tx) {
             anomalies.push(anomaly);
         }
@@ -127,12 +139,12 @@ impl Inspector {
             anomalies.extend(scripts);
         }
 
-        let dusts = self.check_dust_outputs(tx);
+        let dusts = self.check_dust_outputs(&prevouts, tx);
         if !dusts.is_empty() {
             anomalies.extend(dusts);
         }
 
-        let inputs = self.check_inputs(tx);
+        let inputs = self.check_inputs(&prevouts, tx);
         if !inputs.is_empty() {
             anomalies.extend(inputs);
         }
@@ -193,10 +205,19 @@ impl Inspector {
         }
     }
 
-    fn check_dust_outputs(&self, tx: &Transaction) -> Vec<Anomaly> {
+    fn check_dust_outputs(&self, prevouts: &[GetTxOut], tx: &Transaction) -> Vec<Anomaly> {
         const DUST_THRESHOLD: Amount = Amount::from_sat(546);
 
-        tx.output
+        let input_amt: Amount = prevouts
+            .iter()
+            .map(|out| Amount::from_btc(out.value).expect("valid"))
+            .sum();
+        let output_amt: Amount = tx.output.iter().map(|out| out.value).sum();
+
+        let is_zero_fee = input_amt == output_amt;
+
+        let res = tx
+            .output
             .iter()
             .filter_map(|output| {
                 let amt = output.value;
@@ -212,7 +233,15 @@ impl Inspector {
                     None
                 }
             })
-            .collect()
+            .collect::<Vec<_>>();
+
+        // If the transaction has zero fee and only one dust output, ignore it
+        // this is an Ephemeral dust transaction which is now standard
+        if is_zero_fee && res.len() == 1 {
+            vec![]
+        } else {
+            res
+        }
     }
 
     fn check_ancestor_chains(&self, txid: Txid) -> anyhow::Result<Option<Anomaly>> {
@@ -294,27 +323,16 @@ impl Inspector {
         Ok(None)
     }
 
-    fn check_inputs(&self, tx: &Transaction) -> Vec<Anomaly> {
+    fn check_inputs(&self, prevouts: &[GetTxOut], tx: &Transaction) -> Vec<Anomaly> {
         tx.input
             .iter()
+            .zip(prevouts)
             .enumerate()
-            .flat_map(|(idx, input)| {
+            .flat_map(|(idx, (input, prevout))| {
                 let leaf_script = input.witness.taproot_leaf_script();
                 let annex = input.witness.taproot_annex();
 
-                let prevout = self.rpc.get_tx_out(
-                    input.previous_output.txid,
-                    input.previous_output.vout as u64,
-                );
-
-                if prevout.is_err() {
-                    return vec![];
-                }
-
-                let prevout_script = {
-                    let prevout = prevout.unwrap();
-                    ScriptBuf::from_hex(&prevout.script_pubkey.hex)
-                };
+                let prevout_script = ScriptBuf::from_hex(&prevout.script_pubkey.hex);
                 if prevout_script.is_err() {
                     return vec![Anomaly::UnknownInputScriptType {
                         idx: idx as u32,
