@@ -2,10 +2,9 @@ use anyhow::{Context, Result};
 use bitcoin::Txid;
 use reqwest::Client;
 use serde_json::json;
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::config::Config;
 use crate::inspector::Anomaly;
@@ -17,7 +16,6 @@ pub struct Notifier {
 }
 
 struct RateLimiter {
-    sent_messages: HashMap<Txid, Instant>,
     telegram: bool,
     last_send: Option<Instant>,
 }
@@ -25,25 +23,9 @@ struct RateLimiter {
 impl RateLimiter {
     fn new(telegram: bool) -> Self {
         Self {
-            sent_messages: HashMap::new(),
             telegram,
             last_send: None,
         }
-    }
-
-    fn should_send(&mut self, txid: Txid) -> bool {
-        if self.sent_messages.contains_key(&txid) {
-            return false;
-        }
-
-        self.sent_messages.insert(txid, Instant::now());
-        true
-    }
-
-    fn cleanup_old_entries(&mut self) {
-        let now = Instant::now();
-        self.sent_messages
-            .retain(|_, v| now.duration_since(*v) < Duration::from_secs(3600));
     }
 
     fn time_until_next_send(&self) -> Option<Duration> {
@@ -80,18 +62,8 @@ impl Notifier {
     }
 
     pub async fn notify(&self, txid: Txid, anomalies: Vec<Anomaly>) -> Result<()> {
-        let mut rate_limiter = self.rate_limiter.lock().await;
-        if !rate_limiter.should_send(txid) {
-            warn!("Skipping duplicate notification for: {txid}");
-            return Ok(());
-        }
-
-        // Periodically cleanup old entries
-        if rate_limiter.sent_messages.len() % 100 == 0 {
-            rate_limiter.cleanup_old_entries();
-        }
-
         // Check if we need to wait for rate limiting
+        let mut rate_limiter = self.rate_limiter.lock().await;
         if let Some(wait_time) = rate_limiter.time_until_next_send() {
             drop(rate_limiter);
             tokio::time::sleep(wait_time).await;

@@ -33,7 +33,7 @@ impl Anomaly {
     pub fn to_message(&self) -> String {
         match self {
             Anomaly::LargeTransaction { size_bytes } => {
-                format!("🐋 Large Transaction\nSize: {} vKB", size_bytes / 1000,)
+                format!("🐋 Large Transaction\nSize: {} vKB", size_bytes / 1000)
             }
             Anomaly::UnusualScript { script_type } => {
                 format!("🔍 Unusual Script\nType: {script_type}",)

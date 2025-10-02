@@ -202,7 +202,7 @@ fn test_anomaly_message_formatting() {
     let large_tx_anomaly = Anomaly::LargeTransaction { size_bytes: 150000 };
     let message = large_tx_anomaly.to_message();
     assert!(message.contains("Large Transaction"));
-    assert!(message.contains("150 KB"));
+    assert!(message.contains("150 vKB"));
 
     let version_anomaly = Anomaly::UnusualVersion {
         version: transaction::Version(999),

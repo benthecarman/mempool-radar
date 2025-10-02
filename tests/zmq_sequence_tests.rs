@@ -1,6 +1,7 @@
-use anyhow::Result;
-use bitcoin::{Amount, Network};
+use anyhow::{Context, Result};
+use bitcoin::{Amount, BlockHash, Network, Txid};
 use corepc_client::client_sync::Auth;
+use corepc_client::client_sync::v17::{Input, Output};
 use corepc_client::client_sync::v29::Client;
 use corepc_node::{Conf, Node as Bitcoind, get_available_port};
 use mempool_radar::ZmqListener;
@@ -12,13 +13,12 @@ use tracing::{Instrument, Level, debug};
 const RPC_USER: &str = "user";
 const RPC_PASS: &str = "pass";
 
-#[tokio::test]
-async fn test_zmq_listener() -> Result<()> {
-    // Initialize tracing subscriber that works with tokio::spawn
+async fn setup_test() -> Result<(Bitcoind, mpsc::Receiver<bitcoin::Transaction>)> {
     tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(Level::DEBUG)
-        .init();
+        .try_init()
+        .ok();
 
     let zmq = get_available_port()?;
     let bitcoind = create_bitcoind(zmq);
@@ -27,22 +27,26 @@ async fn test_zmq_listener() -> Result<()> {
     let auth = Auth::UserPass(RPC_USER.to_string(), RPC_PASS.to_string());
     let rpc = Client::new_with_auth(&bitcoind.rpc_url(), auth)?;
 
-    let (tx_sender, mut tx_receiver) = mpsc::channel(1000);
+    let (tx_sender, tx_receiver) = mpsc::channel(1000);
     let zmq_listener = ZmqListener::new(config.zmq_endpoint.clone(), rpc);
 
-    // Start the ZMQ listener in the current task context to maintain tracing
-    let tx_sender_clone = tx_sender.clone();
     tokio::spawn(
         async move {
-            if let Err(e) = zmq_listener.start(tx_sender_clone).await {
+            if let Err(e) = zmq_listener.start(tx_sender).await {
                 tracing::error!("ZMQ listener error: {e}");
             }
         }
         .instrument(tracing::info_span!("zmq_listener")),
     );
 
-    // Give some time for the ZMQ listener to start
     tokio::time::sleep(Duration::from_secs(1)).await;
+
+    Ok((bitcoind, tx_receiver))
+}
+
+#[tokio::test]
+async fn test_zmq_listener() -> Result<()> {
+    let (bitcoind, mut tx_receiver) = setup_test().await?;
 
     // Generate a tx to trigger a sequence message
     let address = bitcoin::Address::from_str("bcrt1qfehlhwqmwc3x39h5z4fw0vygqkdc82qxjchzds")?;
@@ -64,8 +68,79 @@ async fn test_zmq_listener() -> Result<()> {
     generate_blocks(&bitcoind, 1);
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // We should not receive any more transactions since it is in a block.
+    // We should not receive any more transactions since it was already processed from mempool
     assert_eq!(tx_receiver.len(), 0);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_block_processing() -> Result<()> {
+    let (bitcoind, mut tx_receiver) = setup_test().await?;
+
+    // Create a raw transaction without broadcasting it to mempool
+    let address = bitcoin::Address::from_str("bcrt1qfehlhwqmwc3x39h5z4fw0vygqkdc82qxjchzds")?
+        .assume_checked();
+
+    // Get a UTXO from the wallet using list_unspent
+    let unspent = bitcoind.client.list_unspent()?;
+    let utxo = unspent.0.first().context("No UTXOs available")?;
+
+    // Create inputs and outputs for raw transaction
+    let input = Input {
+        txid: Txid::from_str(&utxo.txid)?,
+        vout: utxo.vout as u64,
+        sequence: None,
+    };
+    let output = Output::new(address, Amount::from_btc(0.5)?);
+
+    // Create raw transaction
+    let created = bitcoind
+        .client
+        .create_raw_transaction(&[input], &[output])?;
+
+    let tx = created.transaction()?;
+
+    // Sign the transaction
+    let signed = bitcoind.client.sign_raw_transaction_with_wallet(&tx)?;
+
+    // Mine a block with this transaction using generateblock so it bypasses the mempool
+    let mine_address = bitcoind.client.new_address()?;
+    let block_result =
+        bitcoind
+            .client
+            .generate_block(&mine_address.to_string(), &[signed.hex], true)?;
+
+    debug!(
+        "Mined block with transaction bypassing mempool: {}",
+        block_result.hash
+    );
+
+    // Invalidate and reconsider the block to trigger ZMQ notifications
+    let block_hash = BlockHash::from_str(&block_result.hash)?;
+    bitcoind.client.invalidate_block(block_hash)?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _: serde_json::Value = bitcoind
+        .client
+        .call("reconsiderblock", &[serde_json::json!(block_result.hash)])?;
+
+    // Wait for block to be processed
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // We should receive 1 transaction from the block (not from mempool)
+    let mut block_tx_count = 0;
+    while let Ok(Some(tx)) = tokio::time::timeout(Duration::from_secs(1), tx_receiver.recv()).await
+    {
+        debug!("Received transaction: {}", tx.compute_txid());
+        block_tx_count += 1;
+    }
+
+    debug!("Total transactions received from block: {block_tx_count}");
+
+    assert_eq!(
+        block_tx_count, 1,
+        "Should receive 1 transaction from block that was never in mempool"
+    );
 
     Ok(())
 }
