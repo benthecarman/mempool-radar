@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
+use bitcoin::hashes::Hash;
 use bitcoin::hex::{DisplayHex, FromHex};
 use bitcoin::{BlockHash, Transaction, Txid, consensus::encode::deserialize};
 use corepc_client::client_sync::v29::Client;
 use std::collections::HashSet;
-use std::str::FromStr;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 use zeromq::{Socket, SocketRecv};
@@ -107,12 +107,14 @@ impl ZmqListener {
             return Ok(());
         }
 
-        let hash_bytes = &body[0..32];
+        let mut hash_bytes: [u8; 32] = body[0..32].try_into()?;
         let event_type_byte = &body[32..33];
 
         let event_type = event_type_byte[0] as char;
 
         let hash_hex = hash_bytes.to_lower_hex_string();
+
+        hash_bytes.reverse(); // Convert from little-endian to big-endian
 
         match event_type {
             'A' => {
@@ -129,48 +131,46 @@ impl ZmqListener {
                 ]);
                 trace!("Transaction added to mempool: {hash_hex} (seq: {sequence_num})");
 
-                if let Ok(txid) = Txid::from_str(hash_hex.as_str()) {
-                    if self.processed_txs.contains(&txid) {
-                        debug!("Skipping already processed transaction: {txid}");
-                        return Ok(());
-                    }
+                let txid = Txid::from_byte_array(hash_bytes);
 
-                    match self.rpc.get_raw_transaction(txid) {
-                        Ok(raw_tx_response) => match <Vec<u8>>::from_hex(&raw_tx_response.0) {
-                            Ok(raw_tx_bytes) => match deserialize::<Transaction>(&raw_tx_bytes) {
-                                Ok(tx) => {
-                                    self.processed_txs.insert(txid);
-                                    if let Err(e) = tx_sender
-                                        .send(TransactionWithSource {
-                                            transaction: tx,
-                                            source: TransactionSource::Mempool,
-                                        })
-                                        .await
-                                    {
-                                        error!("Failed to send transaction to processor: {e}");
-                                    }
+                if self.processed_txs.contains(&txid) {
+                    debug!("Skipping already processed transaction: {txid}");
+                    return Ok(());
+                }
 
-                                    // Periodically cleanup old entries (every 1,000 txs)
-                                    if self.processed_txs.len().is_multiple_of(1_000) {
-                                        self.cleanup_old_entries();
-                                    }
+                match self.rpc.get_raw_transaction(txid) {
+                    Ok(raw_tx_response) => match <Vec<u8>>::from_hex(&raw_tx_response.0) {
+                        Ok(raw_tx_bytes) => match deserialize::<Transaction>(&raw_tx_bytes) {
+                            Ok(tx) => {
+                                self.processed_txs.insert(txid);
+                                if let Err(e) = tx_sender
+                                    .send(TransactionWithSource {
+                                        transaction: tx,
+                                        source: TransactionSource::Mempool,
+                                    })
+                                    .await
+                                {
+                                    error!("Failed to send transaction to processor: {e}");
                                 }
-                                Err(e) => {
-                                    error!("Failed to deserialize transaction {hash_hex}: {e}");
+
+                                // Periodically cleanup old entries (every 1,000 txs)
+                                if self.processed_txs.len().is_multiple_of(1_000) {
+                                    self.cleanup_old_entries();
                                 }
-                            },
+                            }
                             Err(e) => {
-                                error!("Failed to decode hex transaction data for {hash_hex}: {e}");
+                                error!("Failed to deserialize transaction {hash_hex}: {e}");
                             }
                         },
                         Err(e) => {
-                            debug!(
-                                "Failed to fetch transaction {hash_hex} (may have been removed from mempool): {e}"
-                            );
+                            error!("Failed to decode hex transaction data for {hash_hex}: {e}");
                         }
+                    },
+                    Err(e) => {
+                        debug!(
+                            "Failed to fetch transaction {hash_hex} (may have been removed from mempool): {e}"
+                        );
                     }
-                } else {
-                    error!("Invalid transaction hash format: {hash_hex}");
                 }
             }
             'R' => {
@@ -190,19 +190,17 @@ impl ZmqListener {
             'C' => {
                 debug!("Block connected: {hash_hex}");
 
-                if let Ok(block_hash) = BlockHash::from_str(hash_hex.as_str()) {
-                    if self.processed_blocks.contains(&block_hash) {
-                        debug!("Skipping already processed block: {block_hash}");
-                        return Ok(());
-                    }
+                let block_hash = BlockHash::from_byte_array(hash_bytes);
 
-                    if let Err(e) = self.process_block(block_hash, tx_sender).await {
-                        error!("Failed to process block {block_hash}: {e}");
-                    } else {
-                        self.processed_blocks.insert(block_hash);
-                    }
+                if self.processed_blocks.contains(&block_hash) {
+                    debug!("Skipping already processed block: {block_hash}");
+                    return Ok(());
+                }
+
+                if let Err(e) = self.process_block(block_hash, tx_sender).await {
+                    error!("Failed to process block {block_hash}: {e}");
                 } else {
-                    error!("Invalid block hash format: {hash_hex}");
+                    self.processed_blocks.insert(block_hash);
                 }
             }
             'D' => {
