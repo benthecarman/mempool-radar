@@ -11,6 +11,10 @@ use crate::config::Config;
 #[derive(Debug, Clone)]
 pub enum Anomaly {
     LargeTransaction { size_bytes: usize },
+    TooSmallTransaction { size_bytes: usize },
+    LargeScriptSig { size_bytes: usize },
+    NonPushOnlyScriptSig { idx: usize },
+    LegacySigOpsLimitExceeded { count: usize },
     MultipleOpReturns { count: usize },
     UnusualScript { script_type: String },
     UnusualVersion { version: Version },
@@ -23,6 +27,10 @@ pub enum Anomaly {
     HasOpSuccess { idx: u32, opcode: Opcode },
     UnknownLeafVersion { idx: u32, version: u8 },
     UnknownInputScriptType { idx: u32, script_type: String },
+    ExcessiveP2wshStackItems { idx: u32, count: usize },
+    OversizedP2wshStackItem { idx: u32, size: usize },
+    OversizedTapscriptStackItem { idx: u32, size: usize },
+    OversizedP2wshScript { size: usize },
 }
 
 impl std::fmt::Display for Anomaly {
@@ -36,6 +44,18 @@ impl Anomaly {
         match self {
             Anomaly::LargeTransaction { size_bytes } => {
                 format!("🐋 Large Transaction\nSize: {} vKB", size_bytes / 1000)
+            }
+            Anomaly::TooSmallTransaction { size_bytes } => {
+                format!("🐁 Too Small Transaction\nSize: {size_bytes} vb")
+            }
+            Anomaly::LargeScriptSig { size_bytes } => {
+                format!("📝 Large ScriptSig\nSize: {size_bytes} bytes")
+            }
+            Anomaly::NonPushOnlyScriptSig { idx } => {
+                format!("🚫 Non-Push-Only ScriptSig\nInput Index: {idx}")
+            }
+            Anomaly::LegacySigOpsLimitExceeded { count } => {
+                format!("⚠️ Legacy SigOps Limit Exceeded\nCount: {count}")
             }
             Anomaly::UnusualScript { script_type } => {
                 format!("🔍 Unusual Script\nType: {script_type}",)
@@ -78,6 +98,18 @@ impl Anomaly {
             Anomaly::MultipleOpReturns { count } => {
                 format!("📦 Multiple OP_RETURN Outputs\nCount: {count}")
             }
+            Anomaly::ExcessiveP2wshStackItems { idx, count } => {
+                format!("📚 Excessive P2WSH Stack Items\nInput Index: {idx}, Count: {count}")
+            }
+            Anomaly::OversizedP2wshStackItem { idx, size } => {
+                format!("📏 Oversized P2WSH Stack Item\nInput Index: {idx}, Size: {size} bytes")
+            }
+            Anomaly::OversizedTapscriptStackItem { idx, size } => {
+                format!("📏 Oversized Tapscript Stack Item\nInput Index: {idx}, Size: {size} bytes")
+            }
+            Anomaly::OversizedP2wshScript { size } => {
+                format!("📜 Oversized P2WSH Script\nSize: {size} bytes")
+            }
         }
     }
 }
@@ -115,6 +147,10 @@ impl Inspector {
             anomalies.push(anomaly);
         }
 
+        if let Some(anomaly) = self.check_small_transaction(txid, tx) {
+            anomalies.push(anomaly);
+        }
+
         if let Some(anomaly) = self.check_unusual_version(tx) {
             anomalies.push(anomaly);
         }
@@ -138,6 +174,11 @@ impl Inspector {
             }
         }
 
+        let script_sigs = self.check_script_sigs(tx);
+        if !script_sigs.is_empty() {
+            anomalies.extend(script_sigs);
+        }
+
         let scripts = self.check_unusual_output_scripts(tx);
         if !scripts.is_empty() {
             anomalies.extend(scripts);
@@ -148,7 +189,7 @@ impl Inspector {
             anomalies.extend(dusts);
         }
 
-        let inputs = self.check_inputs(&prevouts, tx);
+        let inputs = self.check_witnesses(&prevouts, tx);
         if !inputs.is_empty() {
             anomalies.extend(inputs);
         }
@@ -162,6 +203,16 @@ impl Inspector {
         if size > self.config.large_tx_size {
             info!("Large transaction detected: {txid} (size: {size} bytes)",);
             return Some(Anomaly::LargeTransaction { size_bytes: size });
+        }
+        None
+    }
+
+    fn check_small_transaction(&self, txid: Txid, tx: &Transaction) -> Option<Anomaly> {
+        let size = tx.base_size();
+
+        if size < 65 {
+            info!("Too small transaction detected: {txid} (size: {size} bytes)",);
+            return Some(Anomaly::TooSmallTransaction { size_bytes: size });
         }
         None
     }
@@ -340,7 +391,43 @@ impl Inspector {
         Ok(None)
     }
 
-    fn check_inputs(&self, prevouts: &[GetTxOut], tx: &Transaction) -> Vec<Anomaly> {
+    fn check_script_sigs(&self, tx: &Transaction) -> Vec<Anomaly> {
+        tx.input
+            .iter()
+            .enumerate()
+            .flat_map(|(idx, input)| {
+                let script_sig_size = input.script_sig.len();
+                let mut init = if script_sig_size > 1650 {
+                    vec![Anomaly::LargeScriptSig {
+                        size_bytes: script_sig_size,
+                    }]
+                } else {
+                    vec![]
+                };
+
+                if !input.script_sig.is_push_only() {
+                    init.push(Anomaly::NonPushOnlyScriptSig { idx });
+                }
+
+                let legacy_sig_ops = input.script_sig.count_sigops_legacy();
+
+                if legacy_sig_ops > 15 {
+                    init.push(Anomaly::LegacySigOpsLimitExceeded {
+                        count: legacy_sig_ops,
+                    });
+                }
+
+                init
+            })
+            .collect()
+    }
+
+    fn check_witnesses(&self, prevouts: &[GetTxOut], tx: &Transaction) -> Vec<Anomaly> {
+        const MAX_STANDARD_P2WSH_STACK_ITEMS: usize = 100;
+        const MAX_STANDARD_P2WSH_STACK_ITEM_SIZE: usize = 80;
+        const MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE: usize = 80;
+        const MAX_STANDARD_P2WSH_SCRIPT_SIZE: usize = 3600;
+
         tx.input
             .iter()
             .zip(prevouts)
@@ -359,6 +446,7 @@ impl Inspector {
                 let prevout_script = prevout_script.unwrap();
 
                 let is_p2tr = prevout_script.is_p2tr();
+                let is_p2wsh = prevout_script.is_p2wsh();
 
                 let witness_version = prevout_script.witness_version();
                 if witness_version.is_some_and(|v| v.to_num() > 1) {
@@ -371,37 +459,95 @@ impl Inspector {
                     }];
                 }
 
-                // Shortcircuit if not P2TR
-                if !is_p2tr {
-                    return vec![];
-                }
-
                 let mut anomalies = Vec::new();
-                if let Some(leaf_script) = leaf_script {
-                    if leaf_script.version != LeafVersion::TapScript {
-                        anomalies.push(Anomaly::UnknownLeafVersion {
+
+                // P2WSH checks
+                if is_p2wsh && !input.witness.is_empty() {
+                    let witness_items = &input.witness;
+
+                    // Check number of stack items, make sure to exclude the witnessScript which is the last item
+                    if witness_items.len() - 1 > MAX_STANDARD_P2WSH_STACK_ITEMS {
+                        anomalies.push(Anomaly::ExcessiveP2wshStackItems {
                             idx: idx as u32,
-                            version: leaf_script.version.to_consensus(),
-                        })
+                            count: witness_items.len(),
+                        });
                     }
 
-                    for i in leaf_script.script.instructions() {
-                        if i.is_err() {
-                            break;
+                    // Check size of each stack item (excluding the witnessScript which is the last item)
+                    if witness_items.len() > 1 {
+                        for item in witness_items.iter().take(witness_items.len() - 1) {
+                            if item.len() > MAX_STANDARD_P2WSH_STACK_ITEM_SIZE {
+                                anomalies.push(Anomaly::OversizedP2wshStackItem {
+                                    idx: idx as u32,
+                                    size: item.len(),
+                                });
+                                break; // Only report once per input
+                            }
                         }
-                        if let Ok(bitcoin::blockdata::script::Instruction::Op(opcode)) = i
-                            && opcode.classify(ClassifyContext::TapScript) == Class::SuccessOp
-                        {
-                            anomalies.push(Anomaly::HasOpSuccess {
-                                idx: idx as u32,
-                                opcode,
+                    }
+
+                    // Check witnessScript size (last item in P2WSH witness)
+                    if let Some(witness_script) = witness_items.last() {
+                        if witness_script.len() > MAX_STANDARD_P2WSH_SCRIPT_SIZE {
+                            anomalies.push(Anomaly::OversizedP2wshScript {
+                                size: witness_script.len(),
                             });
                         }
                     }
                 }
 
-                if annex.is_some() {
-                    anomalies.push(Anomaly::HasAnnex { idx: idx as u32 });
+                // Taproot checks
+                if is_p2tr && !input.witness.is_empty() {
+                    if let Some(leaf_script) = leaf_script {
+                        if leaf_script.version != LeafVersion::TapScript {
+                            anomalies.push(Anomaly::UnknownLeafVersion {
+                                idx: idx as u32,
+                                version: leaf_script.version.to_consensus(),
+                            })
+                        }
+
+                        for i in leaf_script.script.instructions() {
+                            if i.is_err() {
+                                break;
+                            }
+                            if let Ok(bitcoin::blockdata::script::Instruction::Op(opcode)) = i
+                                && opcode.classify(ClassifyContext::TapScript) == Class::SuccessOp
+                            {
+                                anomalies.push(Anomaly::HasOpSuccess {
+                                    idx: idx as u32,
+                                    opcode,
+                                });
+                            }
+                        }
+
+                        // Check Tapscript stack item sizes
+                        // Witness format: [stack items...] [script] [control block] [annex (optional)]
+                        // We need to exclude script, control block, and annex from size checks
+                        let witness_items = &input.witness;
+                        if witness_items.len() >= 2 {
+                            let num_items_to_check = if annex.is_some() {
+                                // Exclude script, control block, and annex (last 3 items)
+                                witness_items.len().saturating_sub(3)
+                            } else {
+                                // Exclude script and control block (last 2 items)
+                                witness_items.len().saturating_sub(2)
+                            };
+
+                            for item in witness_items.iter().take(num_items_to_check) {
+                                if item.len() > MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE {
+                                    anomalies.push(Anomaly::OversizedTapscriptStackItem {
+                                        idx: idx as u32,
+                                        size: item.len(),
+                                    });
+                                    break; // Only report once per input
+                                }
+                            }
+                        }
+                    }
+
+                    if annex.is_some() {
+                        anomalies.push(Anomaly::HasAnnex { idx: idx as u32 });
+                    }
                 }
 
                 anomalies
