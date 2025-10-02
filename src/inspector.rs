@@ -1,14 +1,13 @@
 use bitcoin::opcodes::{Class, ClassifyContext};
 use bitcoin::taproot::LeafVersion;
 use bitcoin::transaction::Version;
-use bitcoin::{Amount, ScriptBuf, Transaction, Txid};
+use bitcoin::{Amount, Opcode, ScriptBuf, Transaction, Txid};
 use corepc_client::client_sync::v29::Client;
-use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::config::Config;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum Anomaly {
     LargeTransaction { size_bytes: usize },
     UnusualScript { script_type: String },
@@ -19,7 +18,7 @@ pub enum Anomaly {
     ChainDepthIssue { depth: usize },
     DustOutputs { amt: Amount },
     HasAnnex { idx: u32 },
-    HasOpSuccess { idx: u32, opcode: u8 },
+    HasOpSuccess { idx: u32, opcode: Opcode },
     UnknownLeafVersion { idx: u32, version: u8 },
     UnknownInputScriptType { idx: u32, script_type: String },
 }
@@ -347,7 +346,7 @@ impl Inspector {
                         {
                             anomalies.push(Anomaly::HasOpSuccess {
                                 idx: idx as u32,
-                                opcode: opcode.to_u8(),
+                                opcode,
                             });
                         }
                     }
