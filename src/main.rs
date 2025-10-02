@@ -13,11 +13,17 @@ use notifier::Notifier;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use tracing::{error, info};
+use tracing_subscriber::EnvFilter;
 use zmq_listener::{TransactionSource, ZmqListener};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,mempool_radar=debug"))
+        )
+        .init();
 
     let config = Config::parse();
 
