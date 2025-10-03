@@ -165,12 +165,8 @@ fn create_bitcoind(zmq: u16) -> Bitcoind {
     // Wait for bitcoind to be ready before returning
     wait_for_bitcoind_ready(&bitcoind);
 
-    // mine 101 blocks to get some spendable funds, split it up into multiple calls
-    // to avoid potentially hitting RPC timeouts on slower CI systems
     let address = bitcoind.client.new_address().unwrap();
-    for _ in 0..101 {
-        let _block_hashes = bitcoind.client.generate_to_address(1, &address).unwrap();
-    }
+    let _block_hashes = bitcoind.client.generate_to_address(101, &address).unwrap();
 
     bitcoind
 }

@@ -2,9 +2,8 @@ use anyhow::Context;
 use bitcoin::opcodes::{Class, ClassifyContext};
 use bitcoin::taproot::LeafVersion;
 use bitcoin::transaction::Version;
-use bitcoin::{Amount, Opcode, ScriptBuf, Transaction, Txid};
+use bitcoin::{Amount, Opcode, ScriptBuf, Transaction, TxOut, Txid};
 use corepc_client::client_sync::v29::Client;
-use corepc_client::types::v17::GetTxOut;
 use tracing::info;
 
 // Size thresholds (in bytes)
@@ -164,14 +163,19 @@ impl Inspector {
             .input
             .iter()
             .map(|input| {
-                self.rpc
-                    .get_tx_out(
-                        input.previous_output.txid,
-                        input.previous_output.vout as u64,
-                    )
-                    .context(format!(
-                        "Failed to fetch previous output for input {input:?}"
-                    ))
+                let raw = self
+                    .rpc
+                    .get_raw_transaction(input.previous_output.txid)
+                    .context("Failed to fetch previous transaction")?;
+
+                let prev_tx = raw
+                    .transaction()
+                    .context("Failed to parse previous transaction")?;
+                let vout = input.previous_output.vout as usize;
+                if vout >= prev_tx.output.len() {
+                    anyhow::bail!("Invalid vout index in input");
+                }
+                Ok(prev_tx.output[vout].clone())
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -293,11 +297,8 @@ impl Inspector {
         }
     }
 
-    fn check_dust_outputs(&self, prevouts: &[GetTxOut], tx: &Transaction) -> Vec<Anomaly> {
-        let input_amt: Amount = prevouts
-            .iter()
-            .map(|out| Amount::from_btc(out.value).expect("valid"))
-            .sum();
+    fn check_dust_outputs(&self, prevouts: &[TxOut], tx: &Transaction) -> Vec<Anomaly> {
+        let input_amt: Amount = prevouts.iter().map(|out| out.value).sum();
         let output_amt: Amount = tx.output.iter().map(|out| out.value).sum();
 
         let is_zero_fee = input_amt == output_amt;
@@ -429,7 +430,7 @@ impl Inspector {
             .collect()
     }
 
-    fn check_witnesses(&self, prevouts: &[GetTxOut], tx: &Transaction) -> Vec<Anomaly> {
+    fn check_witnesses(&self, prevouts: &[TxOut], tx: &Transaction) -> Vec<Anomaly> {
         tx.input
             .iter()
             .zip(prevouts)
@@ -438,14 +439,7 @@ impl Inspector {
                 let leaf_script = input.witness.taproot_leaf_script();
                 let annex = input.witness.taproot_annex();
 
-                let prevout_script = ScriptBuf::from_hex(&prevout.script_pubkey.hex);
-                if prevout_script.is_err() {
-                    return vec![Anomaly::UnknownInputScriptType {
-                        idx: idx as u32,
-                        script_type: "Unable to parse previous output script".to_string(),
-                    }];
-                }
-                let prevout_script = prevout_script.unwrap();
+                let prevout_script = &prevout.script_pubkey;
 
                 let is_p2tr = prevout_script.is_p2tr();
                 let is_p2wsh = prevout_script.is_p2wsh();
