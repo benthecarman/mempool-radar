@@ -6,7 +6,40 @@ use corepc_client::client_sync::v29::Client;
 use corepc_client::types::v17::GetTxOut;
 use tracing::info;
 
-use crate::config::Config;
+
+// Size thresholds (in bytes)
+const MIN_TRANSACTION_SIZE: usize = 65;
+const MAX_SCRIPTSIG_SIZE: usize = 1650;
+const MAX_OP_RETURN_SIZE: usize = 83;
+
+// SigOps limits
+const MAX_LEGACY_SIGOPS: usize = 15;
+
+// P2WSH limits
+const MAX_STANDARD_P2WSH_STACK_ITEMS: usize = 100;
+const MAX_STANDARD_P2WSH_STACK_ITEM_SIZE: usize = 80;
+const MAX_STANDARD_P2WSH_SCRIPT_SIZE: usize = 3600;
+
+// Tapscript limits
+const MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE: usize = 80;
+
+// Dust threshold
+const DUST_THRESHOLD: Amount = Amount::from_sat(546);
+
+// OP_RETURN limits
+const MAX_OP_RETURNS: usize = 1;
+
+// P2A script bytes
+const P2A_SCRIPT: [u8; 4] = [0x51, 0x02, 0x4e, 0x73];
+
+// Witness version limits
+const MAX_STANDARD_WITNESS_VERSION: u8 = 1;
+
+// Chain and package limits
+const MAX_ANCESTORS: usize = 25;
+const MAX_DESCENDANTS: usize = 25;
+const MAX_PACKAGE_SIZE: i64 = 101_000;
+const LARGE_TX_SIZE: usize = 100_000;
 
 #[derive(Debug, Clone)]
 pub enum Anomaly {
@@ -43,7 +76,7 @@ impl Anomaly {
     pub fn to_message(&self) -> String {
         match self {
             Anomaly::LargeTransaction { size_bytes } => {
-                format!("🐋 Large Transaction\nSize: {} vKB", size_bytes / 1000)
+                format!("🐋 Large Transaction\nSize: {} vKB", size_bytes / 1_000)
             }
             Anomaly::TooSmallTransaction { size_bytes } => {
                 format!("🐁 Too Small Transaction\nSize: {size_bytes} vb")
@@ -72,7 +105,7 @@ impl Anomaly {
             Anomaly::PackageSizeViolation { package_size } => {
                 format!(
                     "📦 Package Size Violation\nPackage Size: {} KB",
-                    package_size / 1000
+                    package_size / 1_000
                 )
             }
             Anomaly::ChainDepthIssue { depth } => {
@@ -115,13 +148,12 @@ impl Anomaly {
 }
 
 pub struct Inspector {
-    config: Config,
     rpc: Client,
 }
 
 impl Inspector {
-    pub fn new(config: Config, rpc: Client) -> Self {
-        Self { config, rpc }
+    pub fn new(rpc: Client) -> Self {
+        Self { rpc }
     }
 
     pub fn analyze_transaction(
@@ -200,7 +232,7 @@ impl Inspector {
     fn check_large_transaction(&self, txid: Txid, tx: &Transaction) -> Option<Anomaly> {
         let size = tx.vsize();
 
-        if size > self.config.large_tx_size {
+        if size > LARGE_TX_SIZE {
             info!("Large transaction detected: {txid} (size: {size} bytes)",);
             return Some(Anomaly::LargeTransaction { size_bytes: size });
         }
@@ -210,7 +242,7 @@ impl Inspector {
     fn check_small_transaction(&self, txid: Txid, tx: &Transaction) -> Option<Anomaly> {
         let size = tx.base_size();
 
-        if size < 65 {
+        if size < MIN_TRANSACTION_SIZE {
             info!("Too small transaction detected: {txid} (size: {size} bytes)",);
             return Some(Anomaly::TooSmallTransaction { size_bytes: size });
         }
@@ -224,7 +256,7 @@ impl Inspector {
             .filter_map(|output| {
                 let script = &output.script_pubkey;
 
-                if script.is_op_return() && script.len() > 83 {
+                if script.is_op_return() && script.len() > MAX_OP_RETURN_SIZE {
                     Some(Anomaly::UnusualScript {
                         script_type: format!("OP_RETURN ({} bytes)", script.len()),
                     })
@@ -255,7 +287,7 @@ impl Inspector {
             .iter()
             .filter(|output| output.script_pubkey.is_op_return())
             .count();
-        if op_return_count > 1 {
+        if op_return_count > MAX_OP_RETURNS {
             res.push(Anomaly::MultipleOpReturns {
                 count: op_return_count,
             });
@@ -274,8 +306,6 @@ impl Inspector {
     }
 
     fn check_dust_outputs(&self, prevouts: &[GetTxOut], tx: &Transaction) -> Vec<Anomaly> {
-        const DUST_THRESHOLD: Amount = Amount::from_sat(546);
-
         let input_amt: Amount = prevouts
             .iter()
             .map(|out| Amount::from_btc(out.value).expect("valid"))
@@ -316,7 +346,7 @@ impl Inspector {
         match self.rpc.get_mempool_ancestors(txid) {
             Ok(ancestors) => {
                 let ancestor_count = ancestors.0.len();
-                if ancestor_count > self.config.max_ancestors as usize {
+                if ancestor_count > MAX_ANCESTORS {
                     info!("Excessive ancestors detected: {txid} (ancestors: {ancestor_count})");
                     Ok(Some(Anomaly::ExcessiveAncestors { ancestor_count }))
                 } else {
@@ -335,7 +365,7 @@ impl Inspector {
         match self.rpc.get_mempool_descendants(txid) {
             Ok(descendants) => {
                 let descendant_count = descendants.0.len();
-                if descendant_count > self.config.max_descendants as usize {
+                if descendant_count > MAX_DESCENDANTS {
                     info!(
                         "Excessive descendants detected: {txid} (descendants: {descendant_count})"
                     );
@@ -361,7 +391,7 @@ impl Inspector {
                 let total_package_size =
                     entry.0.ancestor_size + entry.0.descendant_size - entry.0.vsize;
 
-                if total_package_size > self.config.max_package_size as i64 {
+                if total_package_size > MAX_PACKAGE_SIZE {
                     info!(
                         "Package size violation detected: {txid} (package size: {total_package_size} bytes)"
                     );
@@ -383,7 +413,7 @@ impl Inspector {
     fn check_chain_depth(&self, txid: Txid) -> anyhow::Result<Option<Anomaly>> {
         if let Ok(ancestors) = self.rpc.get_mempool_ancestors(txid) {
             let depth = ancestors.0.len();
-            if depth > self.config.max_ancestors as usize {
+            if depth > MAX_ANCESTORS {
                 info!("Chain depth issue detected: {txid} (depth: {depth})");
                 return Ok(Some(Anomaly::ChainDepthIssue { depth }));
             }
@@ -397,7 +427,7 @@ impl Inspector {
             .enumerate()
             .flat_map(|(idx, input)| {
                 let script_sig_size = input.script_sig.len();
-                let mut init = if script_sig_size > 1650 {
+                let mut init = if script_sig_size > MAX_SCRIPTSIG_SIZE {
                     vec![Anomaly::LargeScriptSig {
                         size_bytes: script_sig_size,
                     }]
@@ -411,7 +441,7 @@ impl Inspector {
 
                 let legacy_sig_ops = input.script_sig.count_sigops_legacy();
 
-                if legacy_sig_ops > 15 {
+                if legacy_sig_ops > MAX_LEGACY_SIGOPS {
                     init.push(Anomaly::LegacySigOpsLimitExceeded {
                         count: legacy_sig_ops,
                     });
@@ -423,11 +453,6 @@ impl Inspector {
     }
 
     fn check_witnesses(&self, prevouts: &[GetTxOut], tx: &Transaction) -> Vec<Anomaly> {
-        const MAX_STANDARD_P2WSH_STACK_ITEMS: usize = 100;
-        const MAX_STANDARD_P2WSH_STACK_ITEM_SIZE: usize = 80;
-        const MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE: usize = 80;
-        const MAX_STANDARD_P2WSH_SCRIPT_SIZE: usize = 3600;
-
         tx.input
             .iter()
             .zip(prevouts)
@@ -449,7 +474,7 @@ impl Inspector {
                 let is_p2wsh = prevout_script.is_p2wsh();
 
                 let witness_version = prevout_script.witness_version();
-                if witness_version.is_some_and(|v| v.to_num() > 1) {
+                if witness_version.is_some_and(|v| v.to_num() > MAX_STANDARD_WITNESS_VERSION) {
                     return vec![Anomaly::UnknownInputScriptType {
                         idx: idx as u32,
                         script_type: format!(
@@ -487,13 +512,12 @@ impl Inspector {
                     }
 
                     // Check witnessScript size (last item in P2WSH witness)
-                    if let Some(witness_script) = witness_items.last() {
-                        if witness_script.len() > MAX_STANDARD_P2WSH_SCRIPT_SIZE {
+                    if let Some(witness_script) = witness_items.last()
+                        && witness_script.len() > MAX_STANDARD_P2WSH_SCRIPT_SIZE {
                             anomalies.push(Anomaly::OversizedP2wshScript {
                                 size: witness_script.len(),
                             });
                         }
-                    }
                 }
 
                 // Taproot checks
@@ -557,7 +581,7 @@ impl Inspector {
 }
 
 fn is_p2a(script: &ScriptBuf) -> bool {
-    script.as_bytes() == [0x51, 0x02, 0x4e, 0x73]
+    script.as_bytes() == P2A_SCRIPT
 }
 
 #[cfg(test)]

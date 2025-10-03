@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
 
     let rpc_clone = Client::new_with_auth(&config.rpc_url, auth)
         .context("Failed to create second Bitcoin Core RPC client")?;
-    let inspector = Arc::new(Mutex::new(Inspector::new(config.clone(), rpc)));
+    let inspector = Arc::new(Mutex::new(Inspector::new(rpc)));
 
     let (tx_sender, mut tx_receiver) = mpsc::channel(1000);
 
