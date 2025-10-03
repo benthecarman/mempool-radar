@@ -6,7 +6,6 @@ use corepc_client::client_sync::v29::Client;
 use corepc_client::types::v17::GetTxOut;
 use tracing::info;
 
-
 // Size thresholds (in bytes)
 const MIN_TRANSACTION_SIZE: usize = 65;
 const MAX_SCRIPTSIG_SIZE: usize = 1650;
@@ -505,11 +504,12 @@ impl Inspector {
 
                     // Check witnessScript size (last item in P2WSH witness)
                     if let Some(witness_script) = witness_items.last()
-                        && witness_script.len() > MAX_STANDARD_P2WSH_SCRIPT_SIZE {
-                            anomalies.push(Anomaly::OversizedP2wshScript {
-                                size: witness_script.len(),
-                            });
-                        }
+                        && witness_script.len() > MAX_STANDARD_P2WSH_SCRIPT_SIZE
+                    {
+                        anomalies.push(Anomaly::OversizedP2wshScript {
+                            size: witness_script.len(),
+                        });
+                    }
                 }
 
                 // Taproot checks

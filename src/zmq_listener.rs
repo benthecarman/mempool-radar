@@ -3,7 +3,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::{BlockHash, Transaction, Txid};
 use corepc_client::client_sync::v29::Client;
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 use zeromq::{Socket, SocketRecv};
@@ -23,8 +24,8 @@ pub struct TransactionWithSource {
 pub struct ZmqListener {
     endpoint: String,
     rpc: Client,
-    processed_txs: HashSet<Txid>,
-    processed_blocks: HashSet<BlockHash>,
+    processed_txs: HashMap<Txid, Instant>,
+    processed_blocks: HashMap<BlockHash, Instant>,
 }
 
 impl ZmqListener {
@@ -32,8 +33,8 @@ impl ZmqListener {
         Self {
             endpoint,
             rpc,
-            processed_txs: HashSet::with_capacity(11_000),
-            processed_blocks: HashSet::with_capacity(60),
+            processed_txs: HashMap::with_capacity(11_000),
+            processed_blocks: HashMap::with_capacity(60),
         }
     }
 
@@ -134,7 +135,7 @@ impl ZmqListener {
 
                 let txid = Txid::from_byte_array(hash_bytes);
 
-                if self.processed_txs.contains(&txid) {
+                if self.processed_txs.contains_key(&txid) {
                     debug!("Skipping already processed transaction: {txid}");
                     return Ok(());
                 }
@@ -142,7 +143,7 @@ impl ZmqListener {
                 match self.rpc.get_raw_transaction(txid) {
                     Ok(tx) => match tx.transaction() {
                         Ok(transaction) => {
-                            self.processed_txs.insert(txid);
+                            self.processed_txs.insert(txid, Instant::now());
                             if let Err(e) = tx_sender
                                 .send(TransactionWithSource {
                                     transaction,
@@ -186,7 +187,7 @@ impl ZmqListener {
 
                 let block_hash = BlockHash::from_byte_array(hash_bytes);
 
-                if self.processed_blocks.contains(&block_hash) {
+                if self.processed_blocks.contains_key(&block_hash) {
                     debug!("Skipping already processed block: {block_hash}");
                     return Ok(());
                 }
@@ -194,7 +195,7 @@ impl ZmqListener {
                 if let Err(e) = self.process_block(block_hash, tx_sender).await {
                     error!("Failed to process block {block_hash}: {e}");
                 } else {
-                    self.processed_blocks.insert(block_hash);
+                    self.processed_blocks.insert(block_hash, Instant::now());
                 }
             }
             'D' => {
@@ -234,12 +235,12 @@ impl ZmqListener {
             }
 
             let txid = tx.compute_txid();
-            if self.processed_txs.contains(&txid) {
+            if self.processed_txs.contains_key(&txid) {
                 skipped_txs += 1;
                 continue;
             }
 
-            self.processed_txs.insert(txid);
+            self.processed_txs.insert(txid, Instant::now());
             new_txs += 1;
             if let Err(e) = tx_sender
                 .send(TransactionWithSource {
@@ -272,24 +273,30 @@ impl ZmqListener {
         // Keep last 10,000 txs and 50 blocks
         if tx_count > 10_000 {
             let to_remove = tx_count - 10_000;
-            let txs_to_remove: Vec<Txid> =
-                self.processed_txs.iter().take(to_remove).copied().collect();
-            for tx in txs_to_remove {
-                self.processed_txs.remove(&tx);
+            let mut oldest: Vec<_> = self
+                .processed_txs
+                .iter()
+                .map(|(txid, instant)| (*txid, *instant))
+                .collect();
+            oldest.sort_by_key(|(_, instant)| *instant);
+
+            for (txid, _) in oldest.iter().take(to_remove) {
+                self.processed_txs.remove(txid);
             }
             info!("Cleaned up {to_remove} old transaction entries");
         }
 
         if block_count > 50 {
             let to_remove = block_count - 50;
-            let blocks_to_remove: Vec<BlockHash> = self
+            let mut oldest: Vec<_> = self
                 .processed_blocks
                 .iter()
-                .take(to_remove)
-                .copied()
+                .map(|(hash, instant)| (*hash, *instant))
                 .collect();
-            for block in blocks_to_remove {
-                self.processed_blocks.remove(&block);
+            oldest.sort_by_key(|(_, instant)| *instant);
+
+            for (hash, _) in oldest.iter().take(to_remove) {
+                self.processed_blocks.remove(hash);
             }
             info!("Cleaned up {to_remove} old block entries");
         }
