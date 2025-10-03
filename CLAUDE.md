@@ -147,3 +147,7 @@ When a block is connected, the system:
 2. Skips the coinbase transaction
 3. Processes non-coinbase transactions with `from_block=true` to skip mempool-only checks
 4. Tracks which transactions were already seen in the mempool to avoid duplicate analysis
+
+## Code Style
+
+**ALWAYS run `cargo fmt` after making code changes to ensure consistent formatting.**
