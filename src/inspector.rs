@@ -53,7 +53,6 @@ pub enum Anomaly {
     ExcessiveAncestors { ancestor_count: usize },
     ExcessiveDescendants { descendant_count: usize },
     PackageSizeViolation { package_size: usize },
-    ChainDepthIssue { depth: usize },
     DustOutputs { amt: Amount },
     HasAnnex { idx: u32 },
     HasOpSuccess { idx: u32, opcode: Opcode },
@@ -106,9 +105,6 @@ impl Anomaly {
                     "📦 Package Size Violation\nPackage Size: {} KB",
                     package_size / 1_000
                 )
-            }
-            Anomaly::ChainDepthIssue { depth } => {
-                format!("⛓️ Chain Depth Issue\nChain Depth: {depth}")
             }
             Anomaly::DustOutputs { amt } => {
                 format!("💰 Dust Output\nAmount: {amt}")
@@ -197,10 +193,6 @@ impl Inspector {
             }
 
             if let Some(anomaly) = self.check_package_violations(txid)? {
-                anomalies.push(anomaly);
-            }
-
-            if let Some(anomaly) = self.check_chain_depth(txid)? {
                 anomalies.push(anomaly);
             }
         }
@@ -399,17 +391,6 @@ impl Inspector {
                 Ok(None)
             }
         }
-    }
-
-    fn check_chain_depth(&self, txid: Txid) -> anyhow::Result<Option<Anomaly>> {
-        if let Ok(ancestors) = self.rpc.get_mempool_ancestors(txid) {
-            let depth = ancestors.0.len();
-            if depth > MAX_ANCESTORS {
-                info!("Chain depth issue detected: {txid} (depth: {depth})");
-                return Ok(Some(Anomaly::ChainDepthIssue { depth }));
-            }
-        }
-        Ok(None)
     }
 
     fn check_script_sigs(&self, tx: &Transaction) -> Vec<Anomaly> {
