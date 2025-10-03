@@ -17,6 +17,7 @@ pub enum TransactionSource {
 
 #[derive(Debug, Clone)]
 pub struct TransactionWithSource {
+    pub txid: Txid,
     pub transaction: Transaction,
     pub source: TransactionSource,
 }
@@ -146,6 +147,7 @@ impl ZmqListener {
                             self.processed_txs.insert(txid, Instant::now());
                             if let Err(e) = tx_sender
                                 .send(TransactionWithSource {
+                                    txid,
                                     transaction,
                                     source: TransactionSource::Mempool,
                                 })
@@ -244,6 +246,7 @@ impl ZmqListener {
             new_txs += 1;
             if let Err(e) = tx_sender
                 .send(TransactionWithSource {
+                    txid,
                     transaction: tx,
                     source: TransactionSource::Block,
                 })

@@ -1,3 +1,4 @@
+use anyhow::Context;
 use bitcoin::opcodes::{Class, ClassifyContext};
 use bitcoin::taproot::LeafVersion;
 use bitcoin::transaction::Version;
@@ -153,20 +154,24 @@ impl Inspector {
 
     pub fn analyze_transaction(
         &mut self,
+        txid: Txid,
         tx: &Transaction,
         from_block: bool,
     ) -> anyhow::Result<Vec<Anomaly>> {
         let mut anomalies = Vec::new();
-        let txid = tx.compute_txid();
 
         let prevouts = tx
             .input
             .iter()
             .map(|input| {
-                self.rpc.get_tx_out(
-                    input.previous_output.txid,
-                    input.previous_output.vout as u64,
-                )
+                self.rpc
+                    .get_tx_out(
+                        input.previous_output.txid,
+                        input.previous_output.vout as u64,
+                    )
+                    .context(format!(
+                        "Failed to fetch previous output for input {input:?}"
+                    ))
             })
             .collect::<Result<Vec<_>, _>>()?;
 

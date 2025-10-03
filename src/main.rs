@@ -73,26 +73,29 @@ async fn main() -> Result<()> {
     let zmq_listener = ZmqListener::new(config.zmq_endpoint.clone(), rpc_clone);
     let zmq_handle = tokio::spawn(async move {
         if let Err(e) = zmq_listener.start(tx_sender).await {
-            error!("ZMQ listener error: {}", e);
+            error!("ZMQ listener error: {e}");
         }
     });
 
     let processor_handle = tokio::spawn(async move {
         while let Some(tx_with_source) = tx_receiver.recv().await {
+            let txid = tx_with_source.txid;
             let tx = &tx_with_source.transaction;
             let from_block = tx_with_source.source == TransactionSource::Block;
 
-            match inspector.analyze_transaction(tx, from_block) {
+            match inspector.analyze_transaction(txid, tx, from_block) {
                 Ok(anomalies) => {
                     if !anomalies.is_empty() {
-                        let txid = tx.compute_txid();
-                        if let Err(e) = notifier.notify(txid, anomalies).await {
-                            error!("Failed to send notification: {e}");
-                        }
+                        let n = Arc::clone(&notifier);
+                        tokio::spawn(async move {
+                            if let Err(e) = n.notify(tx_with_source.txid, anomalies).await {
+                                error!("Failed to send notification: {e}");
+                            }
+                        });
                     }
                 }
                 Err(e) => {
-                    error!("Error analyzing transaction {}: {e}", tx.compute_txid());
+                    error!("Error analyzing transaction {txid}: {e}");
                     continue;
                 }
             }
