@@ -11,7 +11,7 @@ use corepc_client::client_sync::v29::Client;
 use inspector::Inspector;
 use notifier::Notifier;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use zmq_listener::{TransactionSource, ZmqListener};
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
 
     let rpc_clone = Client::new_with_auth(&config.rpc_url, auth)
         .context("Failed to create second Bitcoin Core RPC client")?;
-    let inspector = Arc::new(Mutex::new(Inspector::new(rpc)));
+    let mut inspector = Inspector::new(rpc);
 
     let (tx_sender, mut tx_receiver) = mpsc::channel(1000);
 
@@ -82,7 +82,6 @@ async fn main() -> Result<()> {
             let tx = &tx_with_source.transaction;
             let from_block = tx_with_source.source == TransactionSource::Block;
 
-            let mut inspector = inspector.lock().await;
             match inspector.analyze_transaction(tx, from_block) {
                 Ok(anomalies) => {
                     if !anomalies.is_empty() {
