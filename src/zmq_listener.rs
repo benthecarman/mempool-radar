@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use bitcoin::hashes::Hash;
-use bitcoin::hex::{DisplayHex, FromHex};
-use bitcoin::{BlockHash, Transaction, Txid, consensus::encode::deserialize};
+use bitcoin::hex::DisplayHex;
+use bitcoin::{BlockHash, Transaction, Txid};
 use corepc_client::client_sync::v29::Client;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
@@ -140,37 +140,30 @@ impl ZmqListener {
                 }
 
                 match self.rpc.get_raw_transaction(txid) {
-                    Ok(raw_tx_response) => match <Vec<u8>>::from_hex(&raw_tx_response.0) {
-                        Ok(raw_tx_bytes) => match deserialize::<Transaction>(&raw_tx_bytes) {
-                            Ok(tx) => {
-                                self.processed_txs.insert(txid);
-                                if let Err(e) = tx_sender
-                                    .send(TransactionWithSource {
-                                        transaction: tx,
-                                        source: TransactionSource::Mempool,
-                                    })
-                                    .await
-                                {
-                                    error!("Failed to send transaction to processor: {e}");
-                                }
+                    Ok(tx) => match tx.transaction() {
+                        Ok(transaction) => {
+                            self.processed_txs.insert(txid);
+                            if let Err(e) = tx_sender
+                                .send(TransactionWithSource {
+                                    transaction,
+                                    source: TransactionSource::Mempool,
+                                })
+                                .await
+                            {
+                                error!("Failed to send transaction to processor: {e}");
+                            }
 
-                                // Periodically cleanup old entries (every 1,000 txs)
-                                if self.processed_txs.len().is_multiple_of(1_000) {
-                                    self.cleanup_old_entries();
-                                }
+                            // Periodically cleanup old entries (every 1,000 txs)
+                            if self.processed_txs.len().is_multiple_of(1_000) {
+                                self.cleanup_old_entries();
                             }
-                            Err(e) => {
-                                error!("Failed to deserialize transaction {hash_hex}: {e}");
-                            }
-                        },
+                        }
                         Err(e) => {
-                            error!("Failed to decode hex transaction data for {hash_hex}: {e}");
+                            error!("Failed to deserialize transaction {hash_hex}: {e}");
                         }
                     },
                     Err(e) => {
-                        debug!(
-                            "Failed to fetch transaction {hash_hex} (may have been removed from mempool): {e}"
-                        );
+                        error!("Failed to get raw transaction: {hash_hex}: {e}");
                     }
                 }
             }

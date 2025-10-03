@@ -207,24 +207,16 @@ impl Inspector {
         }
 
         let script_sigs = self.check_script_sigs(tx);
-        if !script_sigs.is_empty() {
-            anomalies.extend(script_sigs);
-        }
+        anomalies.extend(script_sigs);
 
         let scripts = self.check_unusual_output_scripts(tx);
-        if !scripts.is_empty() {
-            anomalies.extend(scripts);
-        }
+        anomalies.extend(scripts);
 
         let dusts = self.check_dust_outputs(&prevouts, tx);
-        if !dusts.is_empty() {
-            anomalies.extend(dusts);
-        }
+        anomalies.extend(dusts);
 
         let inputs = self.check_witnesses(&prevouts, tx);
-        if !inputs.is_empty() {
-            anomalies.extend(inputs);
-        }
+        anomalies.extend(inputs);
 
         Ok(anomalies)
     }
@@ -233,7 +225,7 @@ impl Inspector {
         let size = tx.vsize();
 
         if size > LARGE_TX_SIZE {
-            info!("Large transaction detected: {txid} (size: {size} bytes)",);
+            info!("Large transaction detected: {txid} (size: {size} bytes)");
             return Some(Anomaly::LargeTransaction { size_bytes: size });
         }
         None
