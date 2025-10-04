@@ -34,7 +34,7 @@ impl ZmqListener {
         Self {
             endpoint,
             rpc,
-            processed_txs: HashMap::with_capacity(11_000),
+            processed_txs: HashMap::with_capacity(101_000),
             processed_blocks: HashMap::with_capacity(60),
         }
     }
@@ -269,13 +269,16 @@ impl ZmqListener {
     }
 
     fn cleanup_old_entries(&mut self) {
+        const TX_CLEANUP_THRESHOLD: usize = 100_000;
+        const BLOCK_CLEANUP_THRESHOLD: usize = 50;
+
         let tx_count = self.processed_txs.len();
         let block_count = self.processed_blocks.len();
 
         // Keep only the most recent entries (prevent unbounded growth)
-        // Keep last 10,000 txs and 50 blocks
-        if tx_count > 10_000 {
-            let to_remove = tx_count - 10_000;
+        // Keep last 100,000 txs and 50 blocks
+        if tx_count > TX_CLEANUP_THRESHOLD {
+            let to_remove = tx_count - TX_CLEANUP_THRESHOLD;
             let mut oldest: Vec<_> = self
                 .processed_txs
                 .iter()
@@ -289,8 +292,8 @@ impl ZmqListener {
             info!("Cleaned up {to_remove} old transaction entries");
         }
 
-        if block_count > 50 {
-            let to_remove = block_count - 50;
+        if block_count > BLOCK_CLEANUP_THRESHOLD {
+            let to_remove = block_count - BLOCK_CLEANUP_THRESHOLD;
             let mut oldest: Vec<_> = self
                 .processed_blocks
                 .iter()
