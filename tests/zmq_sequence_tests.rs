@@ -135,7 +135,7 @@ async fn test_block_processing() -> Result<()> {
     {
         debug!(
             "Received transaction: {}",
-            tx_with_source.transaction.compute_txid()
+            tx_with_source.txid
         );
         block_tx_count += 1;
     }

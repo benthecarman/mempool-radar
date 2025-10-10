@@ -121,8 +121,7 @@ fn test_large_transaction_detection() {
 
     assert!(
         size > 100_000,
-        "Transaction should be large ({}bytes)",
-        size
+        "Transaction should be large ({size}bytes)"
     );
 
     // Test the threshold logic
@@ -175,8 +174,7 @@ fn test_normal_transaction_properties() {
     let size = normal_tx.total_size();
     assert!(
         size < 100_000,
-        "Normal transaction should be under 100KB ({}bytes)",
-        size
+        "Normal transaction should be under 100KB ({size}bytes)"
     );
 
     // Test that version is standard
