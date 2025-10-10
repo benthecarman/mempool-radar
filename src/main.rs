@@ -62,7 +62,8 @@ async fn main() -> Result<()> {
     let rpc = Client::new_with_auth(&config.rpc_url, auth.clone())
         .context("Failed to create Bitcoin Core RPC client")?;
 
-    let notifier = Arc::new(Notifier::new(config.clone()));
+    let notifier =
+        Arc::new(Notifier::new(config.clone()).context("Failed to initialize notifier")?);
 
     let rpc_clone = Client::new_with_auth(&config.rpc_url, auth)
         .context("Failed to create second Bitcoin Core RPC client")?;

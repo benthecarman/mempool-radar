@@ -205,6 +205,8 @@ fn create_config(zmq: u16, rpc_url: String) -> mempool_radar::Config {
         network: Network::Regtest,
         telegram_token: None,
         telegram_chat_id: None,
+        nostr_private_key: None,
+        nostr_relays: vec![],
         rpc_url,
         rpc_user: Some(RPC_USER.to_string()),
         rpc_password: Some(RPC_PASS.to_string()),

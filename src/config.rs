@@ -18,6 +18,19 @@ pub struct Config {
     #[clap(long, env = "MEMPOOL_RADAR_TELEGRAM_CHAT_ID")]
     pub telegram_chat_id: Option<String>,
 
+    /// Nostr private key (nsec or hex format) for signing events
+    #[clap(long, env = "MEMPOOL_RADAR_NOSTR_PRIVATE_KEY")]
+    pub nostr_private_key: Option<String>,
+
+    /// Nostr relays to publish events to (comma-separated)
+    #[clap(
+        long,
+        env = "MEMPOOL_RADAR_NOSTR_RELAYS",
+        value_delimiter = ',',
+        default_value = "wss://relay.damus.io,wss://relay.primal.net,wss://nos.lol"
+    )]
+    pub nostr_relays: Vec<String>,
+
     /// Bitcoin Core RPC URL
     #[clap(default_value_t = String::from("http://127.0.0.1:8332"), long, env = "MEMPOOL_RADAR_RPC_URL")]
     pub rpc_url: String,

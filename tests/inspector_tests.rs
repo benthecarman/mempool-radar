@@ -94,7 +94,7 @@ async fn test_inspector_mempool_transaction_fails() -> Result<()> {
             );
         }
         Err(e) => {
-            panic!("Failed to analyze mempool transaction: {e}" );
+            panic!("Failed to analyze mempool transaction: {e}");
         }
     }
 

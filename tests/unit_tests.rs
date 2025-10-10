@@ -10,6 +10,8 @@ fn create_mock_config() -> Config {
         network: bitcoin::Network::Regtest,
         telegram_token: None,
         telegram_chat_id: None,
+        nostr_private_key: None,
+        nostr_relays: vec![],
         rpc_url: "http://127.0.0.1:18443".to_string(),
         rpc_user: Some("test".to_string()),
         rpc_password: Some("test".to_string()),

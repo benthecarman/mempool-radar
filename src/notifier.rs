@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use bitcoin::Txid;
+use nostr_sdk::{Client as NostrClient, EventBuilder, Keys};
 use reqwest::Client;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -12,6 +13,7 @@ use crate::inspector::Anomaly;
 pub struct Notifier {
     config: Config,
     client: Client,
+    nostr_keys: Option<Keys>,
     rate_limiter: Mutex<RateLimiter>,
 }
 
@@ -51,33 +53,69 @@ impl RateLimiter {
 }
 
 impl Notifier {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config) -> Result<Self> {
         let telegram = config.telegram_token.is_some() && config.telegram_chat_id.is_some();
 
-        Self {
+        // Parse Nostr keys if private key is provided
+        let nostr_keys = if let Some(ref private_key) = config.nostr_private_key {
+            match Keys::parse(private_key) {
+                Ok(keys) => {
+                    info!("Nostr keys parsed successfully");
+                    Some(keys)
+                }
+                Err(e) => {
+                    error!("Failed to parse Nostr private key: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(Self {
             config,
             client: Client::new(),
+            nostr_keys,
             rate_limiter: Mutex::new(RateLimiter::new(telegram)),
-        }
+        })
     }
 
     pub async fn notify(&self, txid: Txid, anomalies: Vec<Anomaly>) -> Result<()> {
-        // Check if we need to wait for rate limiting
-        let mut rate_limiter = self.rate_limiter.lock().await;
-        if let Some(wait_time) = rate_limiter.time_until_next_send() {
-            drop(rate_limiter);
-            tokio::time::sleep(wait_time).await;
-            rate_limiter = self.rate_limiter.lock().await;
-        }
+        self.log_anomalies(txid, &anomalies);
 
-        if self.config.telegram_token.is_some() && self.config.telegram_chat_id.is_some() {
-            rate_limiter.mark_sent();
-            drop(rate_limiter);
-            self.send_telegram(txid, anomalies).await?;
-        } else {
-            drop(rate_limiter);
-            self.log_anomalies(txid, &anomalies);
-        }
+        let has_telegram =
+            self.config.telegram_token.is_some() && self.config.telegram_chat_id.is_some();
+        let has_nostr = self.nostr_keys.is_some();
+
+        // Send to both Telegram and Nostr in parallel
+        let telegram_future = async {
+            if has_telegram {
+                // Check if we need to wait for rate limiting (for Telegram only)
+                let mut rate_limiter = self.rate_limiter.lock().await;
+                if let Some(wait_time) = rate_limiter.time_until_next_send() {
+                    drop(rate_limiter);
+                    tokio::time::sleep(wait_time).await;
+                    rate_limiter = self.rate_limiter.lock().await;
+                }
+                rate_limiter.mark_sent();
+                drop(rate_limiter);
+
+                if let Err(e) = self.send_telegram(txid, anomalies.clone()).await {
+                    error!("Failed to send Telegram notification: {e}");
+                }
+            }
+        };
+
+        let nostr_future = async {
+            if has_nostr {
+                if let Err(e) = self.send_nostr(txid, &anomalies).await {
+                    error!("Failed to send Nostr notification: {e}");
+                }
+            }
+        };
+
+        // Send to both services in parallel
+        tokio::join!(telegram_future, nostr_future);
 
         Ok(())
     }
@@ -120,6 +158,35 @@ impl Notifier {
         Ok(())
     }
 
+    async fn send_nostr(&self, txid: Txid, anomalies: &[Anomaly]) -> Result<()> {
+        let keys = self.nostr_keys.as_ref().context("Nostr keys not set")?;
+
+        let message = create_nostr_message(txid, anomalies);
+
+        // Create a new client and connect on-demand
+        let client = NostrClient::new(keys.clone());
+
+        // Add relays
+        for relay in &self.config.nostr_relays {
+            client.add_relay(relay).await?;
+        }
+
+        // Connect to relays
+        client.connect().await;
+
+        // Create a text note event (kind 1) and publish
+        let builder = EventBuilder::text_note(&message);
+        client.send_event_builder(builder).await?;
+
+        info!("Sent Nostr notification for anomaly {txid}");
+
+        if let Err(e) = client.disconnect().await {
+            error!("Failed to disconnect Nostr client: {e}");
+        }
+
+        Ok(())
+    }
+
     fn log_anomalies(&self, txid: Txid, anomalies: &[Anomaly]) {
         info!("Anomalies detected for transaction {txid}:");
         for anomaly in anomalies {
@@ -133,6 +200,7 @@ impl Notifier {
             self.config.network
         );
 
+        // Send to Telegram if configured
         if self.config.telegram_token.is_some() && self.config.telegram_chat_id.is_some() {
             let token = self.config.telegram_token.as_ref().unwrap();
             let chat_id = self.config.telegram_chat_id.as_ref().unwrap();
@@ -153,11 +221,33 @@ impl Notifier {
                 .send()
                 .await
             {
-                error!("Failed to send startup message: {}", e);
+                error!("Failed to send Telegram startup message: {e}");
             }
         }
 
-        info!("{}", message);
+        // Send to Nostr if configured
+        if let Some(ref keys) = self.nostr_keys {
+            // Create a new client and connect on-demand
+            let client = NostrClient::new(keys.clone());
+
+            // Add relays
+            for relay in &self.config.nostr_relays {
+                if let Err(e) = client.add_relay(relay).await {
+                    error!("Failed to add Nostr relay {relay}: {e}");
+                    continue;
+                }
+            }
+
+            // Connect to relays
+            client.connect().await;
+
+            let builder = EventBuilder::text_note(&message);
+            if let Err(e) = client.send_event_builder(builder).await {
+                error!("Failed to send Nostr startup message: {e}");
+            }
+        }
+
+        info!("{message}");
     }
 }
 
@@ -166,6 +256,20 @@ fn create_telegram_message(txid: Txid, anomalies: &[Anomaly]) -> String {
 
     for anomaly in anomalies {
         message.push_str(anomaly.to_message().as_str());
+        message.push('\n');
+    }
+
+    message.push_str("\nhttps://mempool.space/tx/");
+    message.push_str(&txid.to_string());
+
+    message
+}
+
+fn create_nostr_message(txid: Txid, anomalies: &[Anomaly]) -> String {
+    let mut message = format!("🚨 Anomalies detected in transaction {txid} 🚨\n\n");
+
+    for anomaly in anomalies {
+        message.push_str(&anomaly.to_string());
         message.push('\n');
     }
 
