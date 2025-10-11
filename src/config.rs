@@ -31,6 +31,22 @@ pub struct Config {
     )]
     pub nostr_relays: Vec<String>,
 
+    /// Twitter API consumer key
+    #[clap(long, env = "MEMPOOL_RADAR_TWITTER_CONSUMER_KEY")]
+    pub twitter_consumer_key: Option<String>,
+
+    /// Twitter API consumer secret
+    #[clap(long, env = "MEMPOOL_RADAR_TWITTER_CONSUMER_SECRET")]
+    pub twitter_consumer_secret: Option<String>,
+
+    /// Twitter API access token
+    #[clap(long, env = "MEMPOOL_RADAR_TWITTER_ACCESS_TOKEN")]
+    pub twitter_access_token: Option<String>,
+
+    /// Twitter API access token secret
+    #[clap(long, env = "MEMPOOL_RADAR_TWITTER_ACCESS_TOKEN_SECRET")]
+    pub twitter_access_token_secret: Option<String>,
+
     /// Bitcoin Core RPC URL
     #[clap(default_value_t = String::from("http://127.0.0.1:8332"), long, env = "MEMPOOL_RADAR_RPC_URL")]
     pub rpc_url: String,

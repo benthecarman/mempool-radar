@@ -133,10 +133,7 @@ async fn test_block_processing() -> Result<()> {
     while let Ok(Some(tx_with_source)) =
         tokio::time::timeout(Duration::from_secs(1), tx_receiver.recv()).await
     {
-        debug!(
-            "Received transaction: {}",
-            tx_with_source.txid
-        );
+        debug!("Received transaction: {}", tx_with_source.txid);
         block_tx_count += 1;
     }
 
@@ -207,6 +204,10 @@ fn create_config(zmq: u16, rpc_url: String) -> mempool_radar::Config {
         telegram_chat_id: None,
         nostr_private_key: None,
         nostr_relays: vec![],
+        twitter_consumer_key: None,
+        twitter_consumer_secret: None,
+        twitter_access_token: None,
+        twitter_access_token_secret: None,
         rpc_url,
         rpc_user: Some(RPC_USER.to_string()),
         rpc_password: Some(RPC_PASS.to_string()),

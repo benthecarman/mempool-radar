@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use bitcoin::Txid;
+use egg_mode::Token;
+use egg_mode::tweet::DraftTweet;
 use nostr_sdk::{Client as NostrClient, EventBuilder, Keys};
 use reqwest::Client;
 use serde_json::json;
@@ -14,6 +16,7 @@ pub struct Notifier {
     config: Config,
     client: Client,
     nostr_keys: Option<Keys>,
+    twitter_token: Option<Token>,
     rate_limiter: Mutex<RateLimiter>,
 }
 
@@ -72,10 +75,36 @@ impl Notifier {
             None
         };
 
+        // Set up Twitter token if all credentials are provided
+        let twitter_token = if let (
+            Some(consumer_key),
+            Some(consumer_secret),
+            Some(access_token),
+            Some(access_token_secret),
+        ) = (
+            &config.twitter_consumer_key,
+            &config.twitter_consumer_secret,
+            &config.twitter_access_token,
+            &config.twitter_access_token_secret,
+        ) {
+            let con_token = egg_mode::KeyPair::new(consumer_key.clone(), consumer_secret.clone());
+            let access_token_kp =
+                egg_mode::KeyPair::new(access_token.clone(), access_token_secret.clone());
+            let token = Token::Access {
+                consumer: con_token,
+                access: access_token_kp,
+            };
+            info!("Twitter credentials configured successfully");
+            Some(token)
+        } else {
+            None
+        };
+
         Ok(Self {
             config,
             client: Client::new(),
             nostr_keys,
+            twitter_token,
             rate_limiter: Mutex::new(RateLimiter::new(telegram)),
         })
     }
@@ -86,8 +115,9 @@ impl Notifier {
         let has_telegram =
             self.config.telegram_token.is_some() && self.config.telegram_chat_id.is_some();
         let has_nostr = self.nostr_keys.is_some();
+        let has_twitter = self.twitter_token.is_some();
 
-        // Send to both Telegram and Nostr in parallel
+        // Send to all services in parallel
         let telegram_future = async {
             if has_telegram {
                 // Check if we need to wait for rate limiting (for Telegram only)
@@ -114,8 +144,16 @@ impl Notifier {
             }
         };
 
-        // Send to both services in parallel
-        tokio::join!(telegram_future, nostr_future);
+        let twitter_future = async {
+            if has_twitter {
+                if let Err(e) = self.send_twitter(txid, &anomalies).await {
+                    error!("Failed to send Twitter notification: {e}");
+                }
+            }
+        };
+
+        // Send to all services in parallel
+        tokio::join!(telegram_future, nostr_future, twitter_future);
 
         Ok(())
     }
@@ -187,6 +225,22 @@ impl Notifier {
         Ok(())
     }
 
+    async fn send_twitter(&self, txid: Txid, anomalies: &[Anomaly]) -> Result<()> {
+        let token = self
+            .twitter_token
+            .as_ref()
+            .context("Twitter token not set")?;
+
+        let message = create_twitter_message(txid, anomalies);
+
+        // Send the tweet
+        let draft = DraftTweet::new(message);
+        draft.send(token).await.context("Failed to send tweet")?;
+
+        info!("Sent Twitter notification for anomaly {txid}");
+        Ok(())
+    }
+
     fn log_anomalies(&self, txid: Txid, anomalies: &[Anomaly]) {
         info!("Anomalies detected for transaction {txid}:");
         for anomaly in anomalies {
@@ -247,6 +301,14 @@ impl Notifier {
             }
         }
 
+        // Send to Twitter if configured
+        if let Some(ref token) = self.twitter_token {
+            let draft = DraftTweet::new(message.clone());
+            if let Err(e) = draft.send(token).await {
+                error!("Failed to send Twitter startup message: {e}");
+            }
+        }
+
         info!("{message}");
     }
 }
@@ -275,6 +337,66 @@ fn create_nostr_message(txid: Txid, anomalies: &[Anomaly]) -> String {
 
     message.push_str("\nhttps://mempool.space/tx/");
     message.push_str(&txid.to_string());
+
+    message
+}
+
+fn create_twitter_message(txid: Txid, anomalies: &[Anomaly]) -> String {
+    use std::collections::HashSet;
+
+    const TWITTER_LIMIT: usize = 280;
+
+    // 24 chars
+    let header = "🚨 Anomaly Detected 🚨\n\n";
+
+    // ~89 chars (26 + 64 for txid)
+    let footer = format!("\nhttps://mempool.space/tx/{txid}");
+
+    // Available space for anomaly content
+    let available_space = TWITTER_LIMIT - header.len() - footer.len();
+
+    // Group anomalies by type (discriminant) to get unique types
+    let mut seen_types = HashSet::new();
+    let mut unique_anomalies = Vec::new();
+
+    for anomaly in anomalies {
+        let disc = std::mem::discriminant(anomaly);
+        if seen_types.insert(disc) {
+            unique_anomalies.push(anomaly);
+        }
+    }
+
+    let anomaly_count = anomalies.len();
+
+    // Build anomaly section
+    let mut content = String::new();
+
+    if anomaly_count == 1 {
+        // Single anomaly
+        let line = format!("{}\n", anomalies[0]);
+        if line.len() <= available_space {
+            content = line;
+        } else {
+            content = "Anomaly details too long\n".to_string();
+        }
+    } else {
+        // Add unique anomalies one by one, checking if they fit
+        for anomaly in &unique_anomalies {
+            let line = format!("{anomaly}\n");
+
+            if content.len() + line.len() <= available_space {
+                content.push_str(&line);
+            } else {
+                // Can't fit anymore, stop here
+                break;
+            }
+        }
+    }
+
+    // Build final message
+    let mut message = String::from(header);
+    message.push_str(&content);
+    message.push_str(&footer);
 
     message
 }

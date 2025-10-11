@@ -12,6 +12,10 @@ fn create_mock_config() -> Config {
         telegram_chat_id: None,
         nostr_private_key: None,
         nostr_relays: vec![],
+        twitter_consumer_key: None,
+        twitter_consumer_secret: None,
+        twitter_access_token: None,
+        twitter_access_token_secret: None,
         rpc_url: "http://127.0.0.1:18443".to_string(),
         rpc_user: Some("test".to_string()),
         rpc_password: Some("test".to_string()),
@@ -119,10 +123,7 @@ fn test_large_transaction_detection() {
     let large_tx = create_large_transaction();
     let size = large_tx.total_size();
 
-    assert!(
-        size > 100_000,
-        "Transaction should be large ({size}bytes)"
-    );
+    assert!(size > 100_000, "Transaction should be large ({size}bytes)");
 
     // Test the threshold logic
     assert!(
