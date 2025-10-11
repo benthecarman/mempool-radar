@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
 
     let rpc_clone = Client::new_with_auth(&config.rpc_url, auth)
         .context("Failed to create second Bitcoin Core RPC client")?;
-    let mut inspector = Inspector::new(rpc);
+    let inspector = Inspector::new(rpc);
 
     let (tx_sender, mut tx_receiver) = mpsc::channel(1000);
 
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
             let tx = &tx_with_source.transaction;
             let from_block = tx_with_source.source == TransactionSource::Block;
 
-            match inspector.analyze_transaction(txid, tx, from_block) {
+            match inspector.analyze_transaction(txid, tx, from_block).await {
                 Ok(anomalies) => {
                     if !anomalies.is_empty() {
                         let n = Arc::clone(&notifier);

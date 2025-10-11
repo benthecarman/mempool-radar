@@ -4,6 +4,8 @@ use bitcoin::taproot::LeafVersion;
 use bitcoin::transaction::Version;
 use bitcoin::{Amount, Opcode, ScriptBuf, Transaction, TxOut, Txid};
 use corepc_client::client_sync::v29::Client;
+use futures::stream::{self, StreamExt};
+use std::sync::Arc;
 use tracing::info;
 
 // Size thresholds (in bytes)
@@ -143,41 +145,67 @@ impl Anomaly {
 }
 
 pub struct Inspector {
-    rpc: Client,
+    rpc: Arc<Client>,
 }
 
 impl Inspector {
     pub fn new(rpc: Client) -> Self {
-        Self { rpc }
+        Self { rpc: Arc::new(rpc) }
     }
 
-    pub fn analyze_transaction(
-        &mut self,
+    pub async fn analyze_transaction(
+        &self,
         txid: Txid,
         tx: &Transaction,
         from_block: bool,
     ) -> anyhow::Result<Vec<Anomaly>> {
         let mut anomalies = Vec::new();
 
-        let prevouts = tx
+        // Collect input data first to avoid lifetime issues
+        let input_data: Vec<(usize, Txid, u32)> = tx
             .input
             .iter()
-            .map(|input| {
-                let raw = self
-                    .rpc
-                    .get_raw_transaction(input.previous_output.txid)
-                    .context("Failed to fetch previous transaction")?;
+            .enumerate()
+            .map(|(idx, input)| (idx, input.previous_output.txid, input.previous_output.vout))
+            .collect();
 
-                let prev_tx = raw
-                    .transaction()
-                    .context("Failed to parse previous transaction")?;
-                let vout = input.previous_output.vout as usize;
-                if vout >= prev_tx.output.len() {
-                    anyhow::bail!("Invalid vout index in input");
+        // Fetch prevouts in parallel with a concurrency limit of 4
+        let prevouts = stream::iter(input_data)
+            .map(|(idx, prev_txid, vout)| {
+                let rpc = Arc::clone(&self.rpc);
+
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let raw = rpc
+                            .get_raw_transaction(prev_txid)
+                            .context("Failed to fetch previous transaction")?;
+
+                        let prev_tx = raw
+                            .transaction()
+                            .context("Failed to parse previous transaction")?;
+
+                        let vout_idx = vout as usize;
+                        if vout_idx >= prev_tx.output.len() {
+                            anyhow::bail!("Invalid vout index in input");
+                        }
+
+                        Ok::<_, anyhow::Error>((idx, prev_tx.output[vout_idx].clone()))
+                    })
+                    .await
+                    .context("Task join error")?
                 }
-                Ok(prev_tx.output[vout].clone())
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .buffer_unordered(4)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check for errors and reconstruct the prevouts vector in correct order
+        let mut prevouts_vec: Vec<(usize, TxOut)> = Vec::with_capacity(tx.input.len());
+        for result in prevouts {
+            prevouts_vec.push(result?);
+        }
+        prevouts_vec.sort_by_key(|(idx, _)| *idx);
+        let prevouts: Vec<TxOut> = prevouts_vec.into_iter().map(|(_, txout)| txout).collect();
 
         if let Some(anomaly) = self.check_large_transaction(txid, tx) {
             anomalies.push(anomaly);

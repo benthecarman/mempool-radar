@@ -136,6 +136,7 @@ impl ZmqListener {
 
                 let txid = Txid::from_byte_array(hash_bytes);
 
+                // Use entry API to avoid double hash lookup
                 if self.processed_txs.contains_key(&txid) {
                     debug!("Skipping already processed transaction: {txid}");
                     return Ok(());
@@ -237,22 +238,24 @@ impl ZmqListener {
             }
 
             let txid = tx.compute_txid();
-            if self.processed_txs.contains_key(&txid) {
-                skipped_txs += 1;
-                continue;
-            }
 
-            self.processed_txs.insert(txid, Instant::now());
-            new_txs += 1;
-            if let Err(e) = tx_sender
-                .send(TransactionWithSource {
-                    txid,
-                    transaction: tx,
-                    source: TransactionSource::Block,
-                })
-                .await
-            {
-                error!("Failed to send transaction to processor: {e}");
+            // Use entry API to avoid double hash lookup
+            use std::collections::hash_map::Entry;
+            if let Entry::Vacant(e) = self.processed_txs.entry(txid) {
+                e.insert(Instant::now());
+                new_txs += 1;
+                if let Err(err) = tx_sender
+                    .send(TransactionWithSource {
+                        txid,
+                        transaction: tx,
+                        source: TransactionSource::Block,
+                    })
+                    .await
+                {
+                    error!("Failed to send transaction to processor: {err}");
+                }
+            } else {
+                skipped_txs += 1;
             }
         }
 
@@ -279,14 +282,18 @@ impl ZmqListener {
         // Keep last 100,000 txs and 50 blocks
         if tx_count > TX_CLEANUP_THRESHOLD {
             let to_remove = tx_count - TX_CLEANUP_THRESHOLD;
-            let mut oldest: Vec<_> = self
+            let mut entries: Vec<_> = self
                 .processed_txs
                 .iter()
                 .map(|(txid, instant)| (*txid, *instant))
                 .collect();
-            oldest.sort_by_key(|(_, instant)| *instant);
 
-            for (txid, _) in oldest.iter().take(to_remove) {
+            // Use select_nth_unstable for O(n) partial sort instead of O(n log n) full sort
+            // This puts the to_remove oldest items at the front without sorting everything
+            entries.select_nth_unstable_by_key(to_remove, |(_, instant)| *instant);
+
+            // Remove the oldest entries (first to_remove items are now the oldest)
+            for (txid, _) in entries.iter().take(to_remove) {
                 self.processed_txs.remove(txid);
             }
             info!("Cleaned up {to_remove} old transaction entries");
@@ -294,14 +301,17 @@ impl ZmqListener {
 
         if block_count > BLOCK_CLEANUP_THRESHOLD {
             let to_remove = block_count - BLOCK_CLEANUP_THRESHOLD;
-            let mut oldest: Vec<_> = self
+            let mut entries: Vec<_> = self
                 .processed_blocks
                 .iter()
                 .map(|(hash, instant)| (*hash, *instant))
                 .collect();
-            oldest.sort_by_key(|(_, instant)| *instant);
 
-            for (hash, _) in oldest.iter().take(to_remove) {
+            // Use select_nth_unstable for O(n) partial sort instead of O(n log n) full sort
+            entries.select_nth_unstable_by_key(to_remove, |(_, instant)| *instant);
+
+            // Remove the oldest entries (first to_remove items are now the oldest)
+            for (hash, _) in entries.iter().take(to_remove) {
                 self.processed_blocks.remove(hash);
             }
             info!("Cleaned up {to_remove} old block entries");

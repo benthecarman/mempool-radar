@@ -3,6 +3,7 @@ use bitcoin::Txid;
 use nostr_sdk::{Client as NostrClient, EventBuilder, Keys};
 use reqwest::Client;
 use serde_json::json;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tracing::{error, info};
@@ -116,37 +117,49 @@ impl Notifier {
         let has_nostr = self.nostr_keys.is_some();
         let has_twitter = self.twitter_auth.is_some();
 
+        // Wrap anomalies in Arc to avoid cloning across parallel tasks
+        let anomalies = Arc::new(anomalies);
+
         // Send to all services in parallel
-        let telegram_future = async {
-            if has_telegram {
-                // Check if we need to wait for rate limiting (for Telegram only)
-                let mut rate_limiter = self.rate_limiter.lock().await;
-                if let Some(wait_time) = rate_limiter.time_until_next_send() {
+        let telegram_future = {
+            let anomalies = Arc::clone(&anomalies);
+            async move {
+                if has_telegram {
+                    // Check if we need to wait for rate limiting (for Telegram only)
+                    let mut rate_limiter = self.rate_limiter.lock().await;
+                    if let Some(wait_time) = rate_limiter.time_until_next_send() {
+                        drop(rate_limiter);
+                        tokio::time::sleep(wait_time).await;
+                        rate_limiter = self.rate_limiter.lock().await;
+                    }
+                    rate_limiter.mark_sent();
                     drop(rate_limiter);
-                    tokio::time::sleep(wait_time).await;
-                    rate_limiter = self.rate_limiter.lock().await;
-                }
-                rate_limiter.mark_sent();
-                drop(rate_limiter);
 
-                if let Err(e) = self.send_telegram(txid, anomalies.clone()).await {
-                    error!("Failed to send Telegram notification: {e}");
+                    if let Err(e) = self.send_telegram(txid, &anomalies).await {
+                        error!("Failed to send Telegram notification: {e}");
+                    }
                 }
             }
         };
 
-        let nostr_future = async {
-            if has_nostr {
-                if let Err(e) = self.send_nostr(txid, &anomalies).await {
-                    error!("Failed to send Nostr notification: {e}");
+        let nostr_future = {
+            let anomalies = Arc::clone(&anomalies);
+            async move {
+                if has_nostr {
+                    if let Err(e) = self.send_nostr(txid, &anomalies).await {
+                        error!("Failed to send Nostr notification: {e}");
+                    }
                 }
             }
         };
 
-        let twitter_future = async {
-            if has_twitter {
-                if let Err(e) = self.send_twitter(txid, &anomalies).await {
-                    error!("Failed to send Twitter notification: {e}");
+        let twitter_future = {
+            let anomalies = Arc::clone(&anomalies);
+            async move {
+                if has_twitter {
+                    if let Err(e) = self.send_twitter(txid, &anomalies).await {
+                        error!("Failed to send Twitter notification: {e}");
+                    }
                 }
             }
         };
@@ -157,11 +170,11 @@ impl Notifier {
         Ok(())
     }
 
-    async fn send_telegram(&self, txid: Txid, anomalies: Vec<Anomaly>) -> Result<()> {
+    async fn send_telegram(&self, txid: Txid, anomalies: &[Anomaly]) -> Result<()> {
         let token = self.config.telegram_token.as_ref().unwrap();
         let chat_id = self.config.telegram_chat_id.as_ref().unwrap();
 
-        let message = create_telegram_message(txid, &anomalies);
+        let message = create_telegram_message(txid, anomalies);
 
         let url = format!("https://api.telegram.org/bot{token}/sendMessage");
 

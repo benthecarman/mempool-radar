@@ -17,6 +17,7 @@ bitcoin = { version = "0.32.7", features = ["serde"] }
 clap = { version = "4.1.14", features = ["derive", "env"] }
 home = "0.5.11"
 corepc-client = { version = "0.9.0", features = ["client-sync"] }
+futures = "0.3"
 nostr-sdk = "0.38"
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }

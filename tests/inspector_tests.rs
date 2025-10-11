@@ -67,7 +67,7 @@ async fn test_inspector_mempool_transaction_fails() -> Result<()> {
     let auth = Auth::UserPass(RPC_USER.to_string(), RPC_PASS.to_string());
     let rpc1 = Client::new_with_auth(&bitcoind.rpc_url(), auth.clone())?;
     let rpc2 = Client::new_with_auth(&bitcoind.rpc_url(), auth)?;
-    let mut inspector = Inspector::new(rpc1);
+    let inspector = Inspector::new(rpc1);
 
     // Create a transaction in the mempool
     let address = bitcoin::Address::from_str("bcrt1qfehlhwqmwc3x39h5z4fw0vygqkdc82qxjchzds")?
@@ -84,7 +84,7 @@ async fn test_inspector_mempool_transaction_fails() -> Result<()> {
     let tx = tx_result.transaction()?;
 
     // Try to analyze it
-    let result = inspector.analyze_transaction(txid, &tx, false);
+    let result = inspector.analyze_transaction(txid, &tx, false).await;
 
     match result {
         Ok(anomalies) => {
@@ -115,7 +115,7 @@ async fn test_inspector_confirmed_transaction_fails() -> Result<()> {
     let auth = Auth::UserPass(RPC_USER.to_string(), RPC_PASS.to_string());
     let rpc1 = Client::new_with_auth(&bitcoind.rpc_url(), auth.clone())?;
     let rpc2 = Client::new_with_auth(&bitcoind.rpc_url(), auth)?;
-    let mut inspector = Inspector::new(rpc1);
+    let inspector = Inspector::new(rpc1);
 
     // Create and confirm a transaction
     let address = bitcoin::Address::from_str("bcrt1qfehlhwqmwc3x39h5z4fw0vygqkdc82qxjchzds")?
@@ -142,7 +142,7 @@ async fn test_inspector_confirmed_transaction_fails() -> Result<()> {
     let tx = tx_result.transaction()?;
 
     // Try to analyze it - should fail because prevouts are spent
-    let result = inspector.analyze_transaction(txid, &tx, true);
+    let result = inspector.analyze_transaction(txid, &tx, true).await;
 
     match result {
         Ok(anomalies) => {
@@ -169,7 +169,7 @@ async fn test_inspector_with_unspent_prevouts() -> Result<()> {
     let bitcoind = create_bitcoind();
     let auth = Auth::UserPass(RPC_USER.to_string(), RPC_PASS.to_string());
     let rpc = Client::new_with_auth(&bitcoind.rpc_url(), auth)?;
-    let mut inspector = Inspector::new(rpc);
+    let inspector = Inspector::new(rpc);
 
     // Get a UTXO that hasn't been spent yet
     let unspent = bitcoind.client.list_unspent()?.0;
@@ -203,7 +203,7 @@ async fn test_inspector_with_unspent_prevouts() -> Result<()> {
 
     // Analyze the transaction BEFORE broadcasting it
     // The prevout should be available via get_tx_out since it's unspent
-    let result = inspector.analyze_transaction(txid, &signed_tx, false);
+    let result = inspector.analyze_transaction(txid, &signed_tx, false).await;
 
     match result {
         Ok(anomalies) => {
@@ -232,7 +232,7 @@ async fn test_inspector_from_block_skips_mempool_checks() -> Result<()> {
     let bitcoind = create_bitcoind();
     let auth = Auth::UserPass(RPC_USER.to_string(), RPC_PASS.to_string());
     let rpc = Client::new_with_auth(&bitcoind.rpc_url(), auth)?;
-    let mut inspector = Inspector::new(rpc);
+    let inspector = Inspector::new(rpc);
 
     // Get a simple transaction from a recent block
     let block_count = bitcoind.client.get_block_count()?;
@@ -249,7 +249,7 @@ async fn test_inspector_from_block_skips_mempool_checks() -> Result<()> {
     debug!("Analyzing block transaction: {txid}");
 
     // Analyze with from_block=true
-    let result = inspector.analyze_transaction(txid, tx, true);
+    let result = inspector.analyze_transaction(txid, tx, true).await;
 
     match result {
         Ok(anomalies) => {
