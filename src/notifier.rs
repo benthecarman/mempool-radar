@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use bitcoin::Txid;
-use egg_mode::Token;
-use egg_mode::tweet::DraftTweet;
 use nostr_sdk::{Client as NostrClient, EventBuilder, Keys};
 use reqwest::Client;
 use serde_json::json;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tracing::{error, info};
+use twapi_v2::api::{execute_twitter, post_2_tweets};
+use twapi_v2::oauth10a::OAuthAuthentication;
 
 use crate::config::Config;
 use crate::inspector::Anomaly;
@@ -16,7 +16,7 @@ pub struct Notifier {
     config: Config,
     client: Client,
     nostr_keys: Option<Keys>,
-    twitter_token: Option<Token>,
+    twitter_auth: Option<OAuthAuthentication>,
     rate_limiter: Mutex<RateLimiter>,
 }
 
@@ -75,8 +75,8 @@ impl Notifier {
             None
         };
 
-        // Set up Twitter token if all credentials are provided
-        let twitter_token = if let (
+        // Set up Twitter authentication if all credentials are provided
+        let twitter_auth = if let (
             Some(consumer_key),
             Some(consumer_secret),
             Some(access_token),
@@ -87,15 +87,14 @@ impl Notifier {
             &config.twitter_access_token,
             &config.twitter_access_token_secret,
         ) {
-            let con_token = egg_mode::KeyPair::new(consumer_key.clone(), consumer_secret.clone());
-            let access_token_kp =
-                egg_mode::KeyPair::new(access_token.clone(), access_token_secret.clone());
-            let token = Token::Access {
-                consumer: con_token,
-                access: access_token_kp,
-            };
+            let auth = OAuthAuthentication::new(
+                consumer_key.clone(),
+                consumer_secret.clone(),
+                access_token.clone(),
+                access_token_secret.clone(),
+            );
             info!("Twitter credentials configured successfully");
-            Some(token)
+            Some(auth)
         } else {
             None
         };
@@ -104,7 +103,7 @@ impl Notifier {
             config,
             client: Client::new(),
             nostr_keys,
-            twitter_token,
+            twitter_auth,
             rate_limiter: Mutex::new(RateLimiter::new(telegram)),
         })
     }
@@ -115,7 +114,7 @@ impl Notifier {
         let has_telegram =
             self.config.telegram_token.is_some() && self.config.telegram_chat_id.is_some();
         let has_nostr = self.nostr_keys.is_some();
-        let has_twitter = self.twitter_token.is_some();
+        let has_twitter = self.twitter_auth.is_some();
 
         // Send to all services in parallel
         let telegram_future = async {
@@ -226,16 +225,19 @@ impl Notifier {
     }
 
     async fn send_twitter(&self, txid: Txid, anomalies: &[Anomaly]) -> Result<()> {
-        let token = self
-            .twitter_token
-            .as_ref()
-            .context("Twitter token not set")?;
+        let auth = self.twitter_auth.as_ref().context("Twitter auth not set")?;
 
         let message = create_twitter_message(txid, anomalies);
 
-        // Send the tweet
-        let draft = DraftTweet::new(message);
-        draft.send(token).await.context("Failed to send tweet")?;
+        // Send the tweet using Twitter API v2
+        let body = post_2_tweets::Body {
+            text: Some(message),
+            ..Default::default()
+        };
+        let builder = post_2_tweets::Api::new(body).build(auth);
+        let (_res, _rate_limit) = execute_twitter::<serde_json::Value>(builder)
+            .await
+            .context("Failed to send tweet")?;
 
         info!("Sent Twitter notification for anomaly {txid}");
         Ok(())
@@ -302,9 +304,13 @@ impl Notifier {
         }
 
         // Send to Twitter if configured
-        if let Some(ref token) = self.twitter_token {
-            let draft = DraftTweet::new(message.clone());
-            if let Err(e) = draft.send(token).await {
+        if let Some(ref auth) = self.twitter_auth {
+            let body = post_2_tweets::Body {
+                text: Some(message.clone()),
+                ..Default::default()
+            };
+            let builder = post_2_tweets::Api::new(body).build(auth);
+            if let Err(e) = execute_twitter::<serde_json::Value>(builder).await {
                 error!("Failed to send Twitter startup message: {e}");
             }
         }
