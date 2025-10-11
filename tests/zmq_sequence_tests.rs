@@ -217,5 +217,6 @@ fn create_config(zmq: u16, rpc_url: String) -> mempool_radar::Config {
         max_ancestors: 25,
         max_descendants: 25,
         max_package_size: 101_000,
+        send_startup_message: false,
     }
 }

@@ -65,6 +65,11 @@ async fn main() -> Result<()> {
     let notifier =
         Arc::new(Notifier::new(config.clone()).context("Failed to initialize notifier")?);
 
+    // Send startup message if enabled
+    if config.send_startup_message {
+        notifier.send_startup_message().await;
+    }
+
     let rpc_clone = Client::new_with_auth(&config.rpc_url, auth)
         .context("Failed to create second Bitcoin Core RPC client")?;
     let mut inspector = Inspector::new(rpc);

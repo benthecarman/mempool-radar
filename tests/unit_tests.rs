@@ -25,6 +25,7 @@ fn create_mock_config() -> Config {
         max_ancestors: 25,
         max_descendants: 25,
         max_package_size: 101_000,
+        send_startup_message: false,
     }
 }
 

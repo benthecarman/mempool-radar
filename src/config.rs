@@ -86,6 +86,14 @@ pub struct Config {
         env = "MEMPOOL_RADAR_MAX_PACKAGE_SIZE"
     )]
     pub max_package_size: usize,
+
+    /// Send startup message to notification channels
+    #[clap(
+        default_value_t = false,
+        long,
+        env = "MEMPOOL_RADAR_SEND_STARTUP_MESSAGE"
+    )]
+    pub send_startup_message: bool,
 }
 
 impl Config {
