@@ -150,10 +150,8 @@ impl Notifier {
         let nostr_future = {
             let anomalies = Arc::clone(&anomalies);
             async move {
-                if has_nostr {
-                    if let Err(e) = self.send_nostr(txid, &anomalies, from_block).await {
-                        error!("Failed to send Nostr notification: {e}");
-                    }
+                if has_nostr && let Err(e) = self.send_nostr(txid, &anomalies, from_block).await {
+                    error!("Failed to send Nostr notification: {e}");
                 }
             }
         };
@@ -161,10 +159,9 @@ impl Notifier {
         let twitter_future = {
             let anomalies = Arc::clone(&anomalies);
             async move {
-                if has_twitter {
-                    if let Err(e) = self.send_twitter(txid, &anomalies, from_block).await {
-                        error!("Failed to send Twitter notification: {e}");
-                    }
+                if has_twitter && let Err(e) = self.send_twitter(txid, &anomalies, from_block).await
+                {
+                    error!("Failed to send Twitter notification: {e}");
                 }
             }
         };
