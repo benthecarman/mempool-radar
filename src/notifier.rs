@@ -109,7 +109,12 @@ impl Notifier {
         })
     }
 
-    pub async fn notify(&self, txid: Txid, anomalies: Vec<Anomaly>) -> Result<()> {
+    pub async fn notify(
+        &self,
+        txid: Txid,
+        anomalies: Vec<Anomaly>,
+        from_block: bool,
+    ) -> Result<()> {
         self.log_anomalies(txid, &anomalies);
 
         let has_telegram =
@@ -135,7 +140,7 @@ impl Notifier {
                     rate_limiter.mark_sent();
                     drop(rate_limiter);
 
-                    if let Err(e) = self.send_telegram(txid, &anomalies).await {
+                    if let Err(e) = self.send_telegram(txid, &anomalies, from_block).await {
                         error!("Failed to send Telegram notification: {e}");
                     }
                 }
@@ -146,7 +151,7 @@ impl Notifier {
             let anomalies = Arc::clone(&anomalies);
             async move {
                 if has_nostr {
-                    if let Err(e) = self.send_nostr(txid, &anomalies).await {
+                    if let Err(e) = self.send_nostr(txid, &anomalies, from_block).await {
                         error!("Failed to send Nostr notification: {e}");
                     }
                 }
@@ -157,7 +162,7 @@ impl Notifier {
             let anomalies = Arc::clone(&anomalies);
             async move {
                 if has_twitter {
-                    if let Err(e) = self.send_twitter(txid, &anomalies).await {
+                    if let Err(e) = self.send_twitter(txid, &anomalies, from_block).await {
                         error!("Failed to send Twitter notification: {e}");
                     }
                 }
@@ -170,11 +175,16 @@ impl Notifier {
         Ok(())
     }
 
-    async fn send_telegram(&self, txid: Txid, anomalies: &[Anomaly]) -> Result<()> {
+    async fn send_telegram(
+        &self,
+        txid: Txid,
+        anomalies: &[Anomaly],
+        from_block: bool,
+    ) -> Result<()> {
         let token = self.config.telegram_token.as_ref().unwrap();
         let chat_id = self.config.telegram_chat_id.as_ref().unwrap();
 
-        let message = create_telegram_message(txid, anomalies);
+        let message = create_telegram_message(txid, anomalies, from_block);
 
         let url = format!("https://api.telegram.org/bot{token}/sendMessage");
 
@@ -208,10 +218,10 @@ impl Notifier {
         Ok(())
     }
 
-    async fn send_nostr(&self, txid: Txid, anomalies: &[Anomaly]) -> Result<()> {
+    async fn send_nostr(&self, txid: Txid, anomalies: &[Anomaly], from_block: bool) -> Result<()> {
         let keys = self.nostr_keys.as_ref().context("Nostr keys not set")?;
 
-        let message = create_nostr_message(txid, anomalies);
+        let message = create_nostr_message(txid, anomalies, from_block);
 
         // Create a new client and connect on-demand
         let client = NostrClient::new(keys.clone());
@@ -237,10 +247,15 @@ impl Notifier {
         Ok(())
     }
 
-    async fn send_twitter(&self, txid: Txid, anomalies: &[Anomaly]) -> Result<()> {
+    async fn send_twitter(
+        &self,
+        txid: Txid,
+        anomalies: &[Anomaly],
+        from_block: bool,
+    ) -> Result<()> {
         let auth = self.twitter_auth.as_ref().context("Twitter auth not set")?;
 
-        let message = create_twitter_message(txid, anomalies);
+        let message = create_twitter_message(txid, anomalies, from_block);
 
         // Send the tweet using Twitter API v2
         let body = post_2_tweets::Body {
@@ -332,7 +347,7 @@ impl Notifier {
     }
 }
 
-fn create_telegram_message(txid: Txid, anomalies: &[Anomaly]) -> String {
+fn create_telegram_message(txid: Txid, anomalies: &[Anomaly], from_block: bool) -> String {
     let mut message = format!("🚨 <b>Anomalies detected in transaction {txid}</b> 🚨\n\n");
 
     for anomaly in anomalies {
@@ -340,13 +355,17 @@ fn create_telegram_message(txid: Txid, anomalies: &[Anomaly]) -> String {
         message.push('\n');
     }
 
-    message.push_str("\nhttps://mempool.space/tx/");
+    if from_block {
+        message.push_str("\nhttps://mempool.space/tx/");
+    } else {
+        message.push_str("\nhttps://benpool.space/tx/");
+    }
     message.push_str(&txid.to_string());
 
     message
 }
 
-fn create_nostr_message(txid: Txid, anomalies: &[Anomaly]) -> String {
+fn create_nostr_message(txid: Txid, anomalies: &[Anomaly], from_block: bool) -> String {
     let mut message = format!("🚨 Anomalies detected in transaction {txid} 🚨\n\n");
 
     for anomaly in anomalies {
@@ -354,13 +373,17 @@ fn create_nostr_message(txid: Txid, anomalies: &[Anomaly]) -> String {
         message.push('\n');
     }
 
-    message.push_str("\nhttps://mempool.space/tx/");
+    if from_block {
+        message.push_str("\nhttps://mempool.space/tx/");
+    } else {
+        message.push_str("\nhttps://benpool.space/tx/");
+    }
     message.push_str(&txid.to_string());
 
     message
 }
 
-fn create_twitter_message(txid: Txid, anomalies: &[Anomaly]) -> String {
+fn create_twitter_message(txid: Txid, anomalies: &[Anomaly], from_block: bool) -> String {
     use std::collections::HashSet;
 
     const TWITTER_LIMIT: usize = 280;
@@ -369,7 +392,11 @@ fn create_twitter_message(txid: Txid, anomalies: &[Anomaly]) -> String {
     let header = "🚨 Anomaly Detected 🚨\n\n";
 
     // ~89 chars (26 + 64 for txid)
-    let footer = format!("\nhttps://mempool.space/tx/{txid}");
+    let footer = if from_block {
+        format!("\nhttps://mempool.space/tx/{txid}")
+    } else {
+        format!("\nhttps://benpool.space/tx/{txid}")
+    };
 
     // Available space for anomaly content
     let available_space = TWITTER_LIMIT - header.len() - footer.len();

@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
                     if !anomalies.is_empty() {
                         let n = Arc::clone(&notifier);
                         tokio::spawn(async move {
-                            if let Err(e) = n.notify(tx_with_source.txid, anomalies).await {
+                            if let Err(e) = n.notify(tx_with_source.txid, anomalies, from_block).await {
                                 error!("Failed to send notification: {e}");
                             }
                         });
