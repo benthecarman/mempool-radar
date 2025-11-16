@@ -11,7 +11,7 @@ use tracing::info;
 // Size thresholds (in bytes)
 const MIN_TRANSACTION_SIZE: usize = 65;
 const MAX_SCRIPTSIG_SIZE: usize = 1650;
-const MAX_OP_RETURN_SIZE: usize = 83;
+const MAX_OP_RETURN_SIZE: usize = 100_000;
 
 // SigOps limits
 const MAX_LEGACY_SIGOPS: usize = 15;
@@ -26,9 +26,6 @@ const MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE: usize = 80;
 
 // Dust threshold
 const DUST_THRESHOLD: Amount = Amount::from_sat(546);
-
-// OP_RETURN limits
-const MAX_OP_RETURNS: usize = 1;
 
 // P2A script bytes
 const P2A_SCRIPT: [u8; 4] = [0x51, 0x02, 0x4e, 0x73];
@@ -270,8 +267,7 @@ impl Inspector {
     }
 
     fn check_unusual_output_scripts(&self, tx: &Transaction) -> Vec<Anomaly> {
-        let mut res: Vec<Anomaly> = tx
-            .output
+        tx.output
             .iter()
             .filter_map(|output| {
                 let script = &output.script_pubkey;
@@ -300,19 +296,7 @@ impl Inspector {
                     None
                 }
             })
-            .collect();
-
-        let op_return_count = tx
-            .output
-            .iter()
-            .filter(|output| output.script_pubkey.is_op_return())
-            .count();
-        if op_return_count > MAX_OP_RETURNS {
-            res.push(Anomaly::MultipleOpReturns {
-                count: op_return_count,
-            });
-        }
-        res
+            .collect()
     }
 
     fn check_unusual_version(&self, tx: &Transaction) -> Option<Anomaly> {
