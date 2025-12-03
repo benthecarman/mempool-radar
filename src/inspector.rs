@@ -580,5 +580,6 @@ mod tests {
             .assume_checked();
 
         assert!(is_p2a(&address.script_pubkey()));
+        assert!(is_p2a(&ScriptBuf::new_p2a()));
     }
 }
