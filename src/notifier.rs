@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tracing::{error, info};
 use twapi_v2::api::{execute_twitter, post_2_tweets};
+use twapi_v2::error::Error as TwitterApiError;
 use twapi_v2::oauth10a::OAuthAuthentication;
 
 use crate::config::Config;
@@ -262,7 +263,10 @@ impl Notifier {
         let builder = post_2_tweets::Api::new(body).build(auth);
         let (_res, _rate_limit) = execute_twitter::<serde_json::Value>(builder)
             .await
-            .context("Failed to send tweet")?;
+            .map_err(|e| {
+                log_twitter_api_error("send tweet", &e);
+                anyhow::Error::new(e).context("Failed to send tweet")
+            })?;
 
         info!("Sent Twitter notification for anomaly {txid}");
         Ok(())
@@ -336,11 +340,58 @@ impl Notifier {
             };
             let builder = post_2_tweets::Api::new(body).build(auth);
             if let Err(e) = execute_twitter::<serde_json::Value>(builder).await {
+                log_twitter_api_error("send startup tweet", &e);
                 error!("Failed to send Twitter startup message: {e}");
             }
         }
 
         info!("{message}");
+    }
+}
+
+fn log_twitter_api_error(action: &str, error: &TwitterApiError) {
+    match error {
+        TwitterApiError::Twitter(twitter_error, body, headers) => {
+            error!(
+                action,
+                status_code = %twitter_error.status_code,
+                status = twitter_error.status,
+                title = %twitter_error.title,
+                detail = %twitter_error.detail,
+                error_type = %twitter_error.r#type,
+                response_body = %body,
+                x_access_level = ?headers.x_access_level,
+                x_rate_limit_remaining = ?headers.x_rate_limit_remaining,
+                x_rate_limit_reset = ?headers.x_rate_limit_reset,
+                x_app_limit_24hour_remaining = ?headers.x_app_limit_24hour_remaining,
+                x_app_limit_24hour_reset = ?headers.x_app_limit_24hour_reset,
+                x_user_limit_24hour_remaining = ?headers.x_user_limit_24hour_remaining,
+                x_user_limit_24hour_reset = ?headers.x_user_limit_24hour_reset,
+                x_transaction_id = ?headers.x_transaction_id,
+                "Twitter API request failed"
+            );
+        }
+        TwitterApiError::Other(message, status_code) => {
+            error!(
+                action,
+                status_code = ?status_code,
+                message = %message,
+                "Twitter API request failed"
+            );
+        }
+        TwitterApiError::Reqwest(reqwest_error) => {
+            error!(
+                action,
+                error = %reqwest_error,
+                "Twitter API request failed before receiving an API response"
+            );
+        }
+        TwitterApiError::Timeout => {
+            error!(action, "Twitter API request timed out");
+        }
+        other => {
+            error!(action, error = %other, "Twitter API request failed");
+        }
     }
 }
 
