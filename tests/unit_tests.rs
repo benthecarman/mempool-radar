@@ -22,8 +22,8 @@ fn create_mock_config() -> Config {
         cookie_file: None,
         zmq_endpoint: "tcp://127.0.0.1:28333".to_string(),
         large_tx_size: 100_000,
-        max_ancestors: 25,
-        max_descendants: 25,
+        max_ancestors: 64,
+        max_descendants: 64,
         max_package_size: 101_000,
         send_startup_message: false,
     }
@@ -228,8 +228,8 @@ fn test_config_validation() {
     // Test config values
     assert_eq!(config.network, bitcoin::Network::Regtest);
     assert_eq!(config.large_tx_size, 100_000);
-    assert_eq!(config.max_ancestors, 25);
-    assert_eq!(config.max_descendants, 25);
+    assert_eq!(config.max_ancestors, 64);
+    assert_eq!(config.max_descendants, 64);
     assert_eq!(config.max_package_size, 101_000);
 }
 

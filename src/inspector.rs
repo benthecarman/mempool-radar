@@ -34,8 +34,8 @@ const P2A_SCRIPT: [u8; 4] = [0x51, 0x02, 0x4e, 0x73];
 const MAX_STANDARD_WITNESS_VERSION: u8 = 1;
 
 // Chain and package limits
-const MAX_ANCESTORS: usize = 25;
-const MAX_DESCENDANTS: usize = 25;
+const MAX_ANCESTORS: usize = 64;
+const MAX_DESCENDANTS: usize = 64;
 const MAX_PACKAGE_SIZE: i64 = 101_000;
 const LARGE_TX_SIZE: usize = 100_000;
 

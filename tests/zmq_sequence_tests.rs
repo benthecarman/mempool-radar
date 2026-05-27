@@ -214,8 +214,8 @@ fn create_config(zmq: u16, rpc_url: String) -> mempool_radar::Config {
         cookie_file: None,
         zmq_endpoint: format!("tcp://127.0.0.1:{zmq}"),
         large_tx_size: 100_000,
-        max_ancestors: 25,
-        max_descendants: 25,
+        max_ancestors: 64,
+        max_descendants: 64,
         max_package_size: 101_000,
         send_startup_message: false,
     }

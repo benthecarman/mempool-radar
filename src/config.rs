@@ -72,11 +72,11 @@ pub struct Config {
     pub large_tx_size: usize,
 
     /// Maximum number of ancestor transactions before flagging as anomaly
-    #[clap(default_value_t = 25, long, env = "MEMPOOL_RADAR_MAX_ANCESTORS")]
+    #[clap(default_value_t = 64, long, env = "MEMPOOL_RADAR_MAX_ANCESTORS")]
     pub max_ancestors: u32,
 
     /// Maximum number of descendant transactions before flagging as anomaly
-    #[clap(default_value_t = 25, long, env = "MEMPOOL_RADAR_MAX_DESCENDANTS")]
+    #[clap(default_value_t = 64, long, env = "MEMPOOL_RADAR_MAX_DESCENDANTS")]
     pub max_descendants: u32,
 
     /// Maximum package size in bytes before flagging as anomaly
