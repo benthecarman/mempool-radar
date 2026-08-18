@@ -47,6 +47,56 @@ persistmempool=1
 cargo build --release
 ```
 
+### Nix / NixOS
+
+Build or run the application directly from the flake:
+
+```bash
+nix build
+nix run . -- --help
+```
+
+For a flake-based NixOS configuration, add Mempool Radar as an input and import
+its module:
+
+```nix
+{
+  inputs.mempool-radar.url = "github:benthecarman/mempool-radar";
+
+  outputs = { nixpkgs, mempool-radar, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        mempool-radar.nixosModules.default
+        ({ ... }: {
+          services.mempool-radar = {
+            enable = true;
+            cookieFile = "/var/lib/bitcoind/.cookie";
+            environmentFile = "/run/secrets/mempool-radar.env";
+          };
+
+          # Allow the service user to read Bitcoin Core's cookie. Adjust this
+          # to match the group owning the cookie on your host.
+          users.users.mempool-radar.extraGroups = [ "bitcoin" ];
+        })
+      ];
+    };
+  };
+}
+```
+
+The optional environment file uses systemd's `KEY=value` format and is the
+recommended place for secrets:
+
+```ini
+MEMPOOL_RADAR_TELEGRAM_TOKEN=...
+MEMPOOL_RADAR_TELEGRAM_CHAT_ID=...
+MEMPOOL_RADAR_NOSTR_PRIVATE_KEY=...
+```
+
+Non-secret service settings such as `network`, `rpcUrl`, `zmqEndpoint`, anomaly
+thresholds, and `extraArgs` are available under `services.mempool-radar`.
+
 ## Configuration
 
 Configuration can be provided via command-line arguments or environment variables:
