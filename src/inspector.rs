@@ -2,7 +2,7 @@ use anyhow::Context;
 use bitcoin::opcodes::{Class, ClassifyContext};
 use bitcoin::taproot::LeafVersion;
 use bitcoin::transaction::Version;
-use bitcoin::{Amount, Opcode, ScriptBuf, Transaction, TxOut, Txid};
+use bitcoin::{Amount, Opcode, Script, Transaction, TxOut, Txid};
 use corepc_client::client_sync::v29::Client;
 use futures::stream::{self, StreamExt};
 use std::sync::Arc;
@@ -237,7 +237,7 @@ impl Inspector {
         let scripts = self.check_unusual_output_scripts(tx);
         anomalies.extend(scripts);
 
-        let dusts = self.check_dust_outputs(&prevouts, tx);
+        let dusts = Self::check_dust_outputs(&prevouts, tx);
         anomalies.extend(dusts);
 
         let inputs = self.check_witnesses(&prevouts, tx);
@@ -309,38 +309,37 @@ impl Inspector {
         }
     }
 
-    fn check_dust_outputs(&self, prevouts: &[TxOut], tx: &Transaction) -> Vec<Anomaly> {
+    fn check_dust_outputs(prevouts: &[TxOut], tx: &Transaction) -> Vec<Anomaly> {
         let input_amt: Amount = prevouts.iter().map(|out| out.value).sum();
         let output_amt: Amount = tx.output.iter().map(|out| out.value).sum();
 
         let is_zero_fee = input_amt == output_amt;
 
-        let res = tx
+        // Dust by Bitcoin Core's formula. OP_RETURN is not dust (unspendable,
+        // threshold 0). Pay-to-Anchor still is: the generic witness formula
+        // assumes a signature and prices `OP_1 <0x4e73>` at 240 sats.
+        let dust_outputs: Vec<&TxOut> = tx
             .output
             .iter()
-            .filter_map(|output| {
-                let amt = output.value;
+            .filter(|output| is_dust_output(output))
+            .collect();
 
-                // shortcircuit for non-dust
-                if amt >= DUST_THRESHOLD || output.script_pubkey.is_op_return() {
-                    return None;
-                }
-
-                if output.script_pubkey.minimal_non_dust() > amt {
-                    Some(Anomaly::DustOutputs { amt })
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // If the transaction has zero fee and only one dust output, ignore it
-        // this is an Ephemeral dust transaction which is now standard
-        if is_zero_fee && res.len() == 1 {
-            vec![]
-        } else {
-            res
+        // A zero-fee transaction with exactly one dust output is ephemeral
+        // dust, which is standard. Anchors count, so an anchor plus another
+        // dust output is two dust outputs and is not exempt.
+        if is_zero_fee && dust_outputs.len() == 1 {
+            return vec![];
         }
+
+        // P2A is the standard ephemeral anchor (bc1pfeessrawgf) and is created
+        // at 0 value on purpose for TRUC/v3 package relay, including LN
+        // commitment transactions. Alerting on it is a false positive. Other
+        // dust in the same transaction is still reported.
+        dust_outputs
+            .into_iter()
+            .filter(|output| !is_p2a(&output.script_pubkey))
+            .map(|output| Anomaly::DustOutputs { amt: output.value })
+            .collect()
     }
 
     fn check_ancestor_chains(&self, txid: Txid) -> anyhow::Result<Option<Anomaly>> {
@@ -564,13 +563,31 @@ impl Inspector {
     }
 }
 
-fn is_p2a(script: &ScriptBuf) -> bool {
+/// Bitcoin Core treats an output as dust when its value is below the fee to
+/// spend it at the dust relay rate. OP_RETURN is unspendable, so its threshold
+/// is 0 and a 0-value `OP_RETURN` is standard rather than dust.
+fn is_dust_output(output: &TxOut) -> bool {
+    let amt = output.value;
+    if amt >= DUST_THRESHOLD || output.script_pubkey.is_op_return() {
+        return false;
+    }
+
+    output.script_pubkey.minimal_non_dust() > amt
+}
+
+fn is_p2a(script: &Script) -> bool {
     script.as_bytes() == P2A_SCRIPT
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitcoin::consensus::deserialize;
+    use bitcoin::hashes::Hash;
+    use bitcoin::hex::FromHex;
+    use bitcoin::{
+        OutPoint, PubkeyHash, ScriptBuf, Sequence, TxIn, WPubkeyHash, Witness, absolute,
+    };
     use std::str::FromStr;
 
     #[test]
@@ -581,5 +598,225 @@ mod tests {
 
         assert!(is_p2a(&address.script_pubkey()));
         assert!(is_p2a(&ScriptBuf::new_p2a()));
+        assert_eq!(ScriptBuf::new_p2a().as_bytes(), &P2A_SCRIPT);
+    }
+
+    fn p2wpkh() -> ScriptBuf {
+        ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([0x11; 20]))
+    }
+
+    fn p2pkh() -> ScriptBuf {
+        ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([0x22; 20]))
+    }
+
+    fn tx_with_outputs(outputs: Vec<TxOut>) -> Transaction {
+        Transaction {
+            version: Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: outputs,
+        }
+    }
+
+    fn prevout(sats: u64) -> Vec<TxOut> {
+        vec![TxOut {
+            value: Amount::from_sat(sats),
+            script_pubkey: p2wpkh(),
+        }]
+    }
+
+    fn dust_amounts(anomalies: &[Anomaly]) -> Vec<Amount> {
+        anomalies
+            .iter()
+            .map(|anomaly| match anomaly {
+                Anomaly::DustOutputs { amt } => *amt,
+                other => panic!("unexpected anomaly: {other}"),
+            })
+            .collect()
+    }
+
+    /// f2f03d3e52f336c386c3a39cfce8ef88c75e66e0df84c0c71182e0986b1e9546
+    ///
+    /// Input of 1000 sats, a 750-sat P2WPKH output, and a 0-value P2A anchor
+    /// (`51024e73`). Fee is 250 sats, so the zero-fee ephemeral exemption does
+    /// not apply. The anchor is what the dust detector used to report.
+    #[test]
+    fn p2a_anchor_with_fee_is_not_dust() {
+        let raw = Vec::<u8>::from_hex(
+            "02000000000101dfd4d1fa805b2b1b3b66fb3cdfd88d552a41eb9d456a2ae1c52d0b91658bbff10000000000fdffffff02ee02000000000000160014c855c9d70c76ee9d58d240756103011089f29ff400000000000000000451024e730247304402200e1db96bf7e6ea6f67e779e495f79ee072aba5452646f6240dc0f80e197f2bf7022066953631d7e72e38ef0282621173be2016b11bbbf6de31cc24eeac118f7bafb5012102c4ea309366eecb3bf468670c9281ec8c75ecde8094318e665dec49b5cb6d025100000000",
+        )
+        .unwrap();
+        let tx: Transaction = deserialize(&raw).unwrap();
+        assert_eq!(
+            tx.compute_txid().to_string(),
+            "f2f03d3e52f336c386c3a39cfce8ef88c75e66e0df84c0c71182e0986b1e9546"
+        );
+
+        let p2wpkh_out = &tx.output[0];
+        assert_eq!(p2wpkh_out.value, Amount::from_sat(750));
+        assert!(p2wpkh_out.script_pubkey.is_p2wpkh());
+        assert!(p2wpkh_out.value >= DUST_THRESHOLD);
+        assert!(p2wpkh_out.script_pubkey.minimal_non_dust() <= p2wpkh_out.value);
+
+        let anchor = &tx.output[1];
+        assert_eq!(anchor.value, Amount::ZERO);
+        assert_eq!(anchor.script_pubkey.as_bytes(), &P2A_SCRIPT);
+        assert!(is_p2a(&anchor.script_pubkey));
+        // The generic witness dust formula still prices this spend as if it
+        // carried a signature, which is why a plain threshold check flags it.
+        assert!(anchor.script_pubkey.minimal_non_dust() > anchor.value);
+
+        // Real prevout value was 1000 sats, so the transaction paid a 250-sat fee.
+        let anomalies = Inspector::check_dust_outputs(&prevout(1000), &tx);
+        assert!(
+            anomalies.is_empty(),
+            "0-value P2A anchor should not be reported as dust: {anomalies:?}"
+        );
+    }
+
+    #[test]
+    fn sub_dust_p2wpkh_is_still_flagged() {
+        // One sat under the P2WPKH minimal non-dust amount, and under the
+        // legacy 546-sat floor. Non-zero fee, so ephemeral dust does not apply.
+        let script = p2wpkh();
+        let amt = script.minimal_non_dust() - Amount::ONE_SAT;
+        assert!(amt < DUST_THRESHOLD);
+
+        let tx = tx_with_outputs(vec![TxOut {
+            value: amt,
+            script_pubkey: script,
+        }]);
+        let anomalies = Inspector::check_dust_outputs(&prevout(1000), &tx);
+        assert_eq!(dust_amounts(&anomalies), vec![amt]);
+    }
+
+    #[test]
+    fn p2wpkh_between_witness_and_legacy_thresholds_is_not_dust() {
+        // 330 sats is below the 546-sat legacy floor but above the P2WPKH
+        // threshold (294). The 750-sat output in the reported transaction is
+        // in this same class and is not what produced the alert.
+        let script = p2wpkh();
+        let amt = Amount::from_sat(330);
+        assert!(amt < DUST_THRESHOLD);
+        assert!(script.minimal_non_dust() <= amt);
+
+        let tx = tx_with_outputs(vec![TxOut {
+            value: amt,
+            script_pubkey: script,
+        }]);
+        let anomalies = Inspector::check_dust_outputs(&prevout(1000), &tx);
+        assert!(anomalies.is_empty());
+    }
+
+    #[test]
+    fn anchor_does_not_hide_genuine_dust() {
+        let dust = Amount::from_sat(200);
+        let tx = tx_with_outputs(vec![
+            TxOut {
+                value: Amount::from_sat(750),
+                script_pubkey: p2wpkh(),
+            },
+            TxOut {
+                value: dust,
+                script_pubkey: p2wpkh(),
+            },
+            TxOut {
+                value: Amount::ZERO,
+                script_pubkey: ScriptBuf::new_p2a(),
+            },
+        ]);
+
+        let anomalies = Inspector::check_dust_outputs(&prevout(2000), &tx);
+        assert_eq!(dust_amounts(&anomalies), vec![dust]);
+    }
+
+    #[test]
+    fn zero_fee_anchor_plus_genuine_dust_is_still_flagged() {
+        // Core allows one dust output only when the fee is zero. A 0-value
+        // anchor plus another dust output is two dust outputs, so the
+        // non-anchor output stays an anomaly.
+        let dust = Amount::from_sat(200);
+        let tx = tx_with_outputs(vec![
+            TxOut {
+                value: dust,
+                script_pubkey: p2wpkh(),
+            },
+            TxOut {
+                value: Amount::ZERO,
+                script_pubkey: ScriptBuf::new_p2a(),
+            },
+        ]);
+
+        let anomalies = Inspector::check_dust_outputs(&prevout(dust.to_sat()), &tx);
+        assert_eq!(dust_amounts(&anomalies), vec![dust]);
+    }
+
+    #[test]
+    fn zero_fee_single_dust_output_remains_exempt() {
+        let dust = Amount::from_sat(200);
+        let tx = tx_with_outputs(vec![TxOut {
+            value: dust,
+            script_pubkey: p2wpkh(),
+        }]);
+
+        let anomalies = Inspector::check_dust_outputs(&prevout(dust.to_sat()), &tx);
+        assert!(anomalies.is_empty());
+    }
+
+    #[test]
+    fn multiple_genuine_dust_outputs_are_all_flagged() {
+        let tx = tx_with_outputs(vec![
+            TxOut {
+                value: Amount::from_sat(100),
+                script_pubkey: p2pkh(),
+            },
+            TxOut {
+                value: Amount::from_sat(200),
+                script_pubkey: p2wpkh(),
+            },
+        ]);
+
+        let anomalies = Inspector::check_dust_outputs(&prevout(1000), &tx);
+        assert_eq!(
+            dust_amounts(&anomalies),
+            vec![Amount::from_sat(100), Amount::from_sat(200)]
+        );
+    }
+
+    #[test]
+    fn zero_value_op_return_is_not_dust() {
+        let tx = tx_with_outputs(vec![
+            TxOut {
+                value: Amount::from_sat(750),
+                script_pubkey: p2wpkh(),
+            },
+            TxOut {
+                value: Amount::ZERO,
+                script_pubkey: ScriptBuf::from(vec![0x6a, 0x01, 0x01]),
+            },
+        ]);
+        assert!(tx.output[1].script_pubkey.is_op_return());
+
+        let anomalies = Inspector::check_dust_outputs(&prevout(1000), &tx);
+        assert!(anomalies.is_empty());
+    }
+
+    #[test]
+    fn zero_value_non_anchor_witness_program_is_still_dust() {
+        // Same shape as P2A (OP_1 <2 bytes>) but not the anchor program 0x4e73.
+        let script = ScriptBuf::from(vec![0x51, 0x02, 0x00, 0x01]);
+        assert!(!is_p2a(&script));
+
+        let tx = tx_with_outputs(vec![TxOut {
+            value: Amount::ZERO,
+            script_pubkey: script,
+        }]);
+        let anomalies = Inspector::check_dust_outputs(&prevout(1000), &tx);
+        assert_eq!(dust_amounts(&anomalies), vec![Amount::ZERO]);
     }
 }
